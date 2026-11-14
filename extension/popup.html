@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AI Brain inspector</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #1d1d22; --muted: #666; --line: #ddd; --accent: #c8282f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #17171b; --fg: #eee; --muted: #a0a0a8; --line: #33333a; } }
+  body { margin: 0; width: 320px; font: 13px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  header img { width: 22px; height: 22px; }
+  header b { flex: 1; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #999; }
+  .dot.on { background: #2e9d4f; } .dot.bad { background: var(--accent); }
+  main { padding: 12px; display: grid; gap: 10px; }
+  p { margin: 0; color: var(--muted); }
+  input { width: 100%; box-sizing: border-box; padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; font: inherit; letter-spacing: .05em; }
+  button { padding: 7px 12px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+  button.main { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .tabs { margin: 0; padding-left: 18px; color: var(--muted); }
+  .tabs li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .warn { color: var(--accent); }
+  .small { font-size: 11.5px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header><img src="icon.png" alt=""><b>AI Brain inspector</b><span class="dot" id="dot" title=""></span></header>
+<main>
+  <p id="state">…</p>
+  <section id="pair" hidden>
+    <p style="margin-bottom:6px">Paste the pairing code from AI Brain: Settings &gt; Web inspector &gt; Show pairing code.</p>
+    <input id="code" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false">
+    <div class="row" style="margin-top:8px"><button class="main" id="pair-btn">Pair</button></div>
+  </section>
+  <section id="here" hidden>
+    <p id="here-text" style="margin-bottom:8px"></p>
+    <div class="row"><button class="main" id="share">Share this tab</button><button id="unshare" hidden>Stop sharing</button></div>
+    <p class="small" style="margin-top:8px">A shared tab is signed in as you: AI Brain's brain can read its code, network, console and cookies, and run JavaScript in it. Your browser shows a "debugging" bar while it is shared.</p>
+  </section>
+  <section id="list" hidden><p>Shared tabs:</p><ul class="tabs" id="tabs"></ul></section>
+  <p class="small"><a href="#" id="unpair" hidden>Unpair</a></p>
+</main>
+<script src="popup.js"></script>
+</body>
+</html>

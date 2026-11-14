@@ -57,14 +57,16 @@ const CLAUDE_EXE = findClaude();
 const MCP_CFG = path.join(DATA, "brain-mcp.json");
 // key = the one-task key that lets the approve tool ask the user (only while access is "ask" or "auto").
 // It can only ASK; the answer always comes from a click in the window.
-// ctlKey = the one-task key that lets the brain's app_ tools use the program in the middle (only
-// while "Let the brain use the program in the middle" is on). It ends with the task.
+// ctlKey = the one-task key that lets the brain's app_ tools use the program in the middle, and its
+// web_ tools inspect the tabs shared with the AI Brain browser extension (only while those settings
+// are on). It ends with the task.
 let ctlKey = null, ctlTask = "";
 function writeMcpConfig(s = loadSettings(), key = null) {
-  const env = { AI_BRAIN_CHATGPT: s.chatgptEnabled ? "1" : "0", BRAIN_DATA_DIR: DATA, AI_BRAIN_FLOW: s.flowBrain ? "1" : "0", AI_BRAIN_APPS: s.appsBrain && ctlKey ? "1" : "0", AI_BRAIN_APP_URL: `http://${HOST}:${PORT}` };
+  const env = { AI_BRAIN_CHATGPT: s.chatgptEnabled ? "1" : "0", BRAIN_DATA_DIR: DATA, AI_BRAIN_FLOW: s.flowBrain ? "1" : "0", AI_BRAIN_APPS: s.appsBrain && ctlKey ? "1" : "0",
+    AI_BRAIN_INSPECT: s.inspectBrain && ctlKey ? "1" : "0", AI_BRAIN_APP_URL: `http://${HOST}:${PORT}` };
   for (const k of ["BRAIN_FLOW_PORT", "BRAIN_FLOW_ORIGIN"]) if (process.env[k]) env[k] = process.env[k];
   if (key) Object.assign(env, { AI_BRAIN_APPROVE_URL: `http://${HOST}:${PORT}/api/approval/ask`, AI_BRAIN_APPROVE_KEY: key });
-  if (s.appsBrain && ctlKey) env.AI_BRAIN_CONTROL_KEY = ctlKey;
+  if ((s.appsBrain || s.inspectBrain) && ctlKey) env.AI_BRAIN_CONTROL_KEY = ctlKey;
   writeJson(MCP_CFG, { mcpServers: { "ai-brain": { command: process.execPath, args: [path.join(ROOT, "server.mjs")], env } } });
 }
 
@@ -88,10 +90,12 @@ const usableFolders = (s) => [...new Set(s.folders.map((f) => path.resolve(f)))]
 const HELPER_TOOLS = new Set(["ask_gemini", "ask_chatgpt", "ask_both", "generate_image", "generate_video", "flow_make_video", "flow_save_videos"]);
 const FLOW_TOOLS = ["flow_make_video", "flow_look", "flow_click", "flow_type", "flow_wait", "flow_save_videos"];
 const APP_TOOLS = ["app_open", "app_look", "app_click", "app_type", "app_key", "app_scroll", "app_drag"];
+const WEB_TOOLS = ["web_tabs", "web_html", "web_eval", "web_network", "web_response", "web_console", "web_cookies", "web_styles", "web_screenshot", "web_go"];
 const ASK_RULES = JSON.stringify({ permissions: { ask: ["PowerShell", "Bash", "Write", "Edit", "NotebookEdit"] } });
 const brainTools = (s) =>
   [...(s.chatgptEnabled ? ["ask_chatgpt", "ask_gemini", "ask_both", "generate_image"] : ["ask_gemini", "generate_image"]),
-    ...(googleKeyState().connected ? ["generate_video"] : []), ...(s.flowBrain ? FLOW_TOOLS : []), ...(s.appsBrain ? APP_TOOLS : [])].map((t) => `mcp__ai-brain__${t}`);
+    ...(googleKeyState().connected ? ["generate_video"] : []), ...(s.flowBrain ? FLOW_TOOLS : []), ...(s.appsBrain ? APP_TOOLS : []),
+    ...(s.inspectBrain ? WEB_TOOLS : [])].map((t) => `mcp__ai-brain__${t}`);
 const videoName = (id) => VIDEO_MODELS.find((m) => m.id === id)?.label.replace(/ \(.*/, "") || String(id).replace(/^models\//, "");
 
 function systemPrompt(s) {
@@ -106,6 +110,11 @@ function systemPrompt(s) {
     "  app_look gives a picture of the program and a numbered list of the buttons, menus, boxes and other things on it (positions are picture pixels). app_open opens one of the programs the user added to the Apps panel. Every click, typing, key, scroll or drag shows you a new picture, so check that each step did what you expected before the next one.",
     "  Click by the number from the list when the thing is listed; otherwise use x and y in the picture. Some programs (Blender, games, 3D and drawing tools) draw everything themselves and list almost nothing: use the picture and their keyboard shortcuts then.",
     "  Rules: use the program only for what the user asked. Never type passwords or sign in for the user, never buy, pay, send messages or post anything, and never delete, close without saving or overwrite the user's work unless the user asked for exactly that; when the program asks about any of those, stop and ask the user. If the user moves the mouse, you stop: the user is taking over; say what you did and what is left. Work in clear steps and tell the user briefly what you did in the program.",
+  ].join("\n"));
+  if (s.inspectBrain) lines.push([
+    "- WEB INSPECTOR (tools web_tabs, web_html, web_eval, web_network, web_response, web_console, web_cookies, web_styles, web_screenshot, web_go) - like a web developer's DevTools, on the tabs the user SHARED with the AI Brain extension in their own browser (Brave), signed in as the user.",
+    "  Start with web_tabs. Each tool works on one shared tab (the last one shared, unless you give tab). web_html reads the live page code (or one part, by CSS selector); web_eval runs JavaScript in the page and returns the result; web_network lists the requests the page made since it was shared (reload with web_go to see a page load from the start), web_response shows one of them in full; web_console shows console messages and errors; web_cookies, web_styles and web_screenshot do what they say.",
+    "  Rules: these tabs are the user's real accounts. Only inspect for what the user asked. Read, but do not change anything (no web_eval that clicks, submits, buys, posts, sends, deletes or changes settings) unless the user asked for exactly that. Never put passwords, cookie values, tokens or personal data in your answer unless the user asked for that exact item. If a tab is not shared, ask the user to open it and click the AI Brain extension button there.",
   ].join("\n"));
   if (s.chatgptEnabled) {
     lines.push("How to work: decide what each helper is best at, delegate sub-tasks (in parallel with ask_both when useful), compare and combine their answers, check their work, and give the user one clear final answer.");
@@ -122,7 +131,7 @@ function systemPrompt(s) {
     if (s.access === "ask") lines.push(`You MAY create and edit files (Write, Edit) and run PowerShell commands. Every change and every command first waits for the user to click Allow in the app, so work in a few clear steps and say briefly what each step is for. If the user denies a step, do not try the same thing another way; tell them what you wanted to do and why.`);
     else lines.push(`You MAY create and edit files (Write, Edit) and run PowerShell commands. The user switched on "Always allow", so nothing waits for a click: every change and command runs right away. That is trust, so be careful: work in a few clear steps, say briefly what each step does, never delete or overwrite anything the task did not ask for, and when a step could lose the user's work, make a copy first. If a step is refused, do not try the same thing another way; tell the user what you wanted to do and why.`);
     lines.push(`Your working folder is ${WORK}.${folders.length ? ` The user also gave you these folders: ${folders.join("; ")}.` : ""} The Write and Edit tools only work inside those folders; anywhere else you need a PowerShell command (which also needs the user's OK).`);
-    lines.push("Never read or change Discord's data, the .claude, .codex or .gemini folders, or AI Brain's brain-mcp.json and google-key.json. Those requests are always refused.");
+    lines.push("Never read or change Discord's data, the .claude, .codex or .gemini folders, or AI Brain's brain-mcp.json, google-key.json and inspect-key.json. Those requests are always refused.");
   } else {
     lines.push("You can NOT change files or run commands in this app right now. If a task needs that, say so and tell the user they can switch it on in Settings > The brain > File and command access (the app then asks them before every change).");
   }
@@ -411,7 +420,7 @@ function forbidden(input) {
   walk(input);
   const t = all.join("\n").toLowerCase().replace(/\\+/g, "/");
   if (t.includes("discord") && /appdata|leveldb|local storage|token/.test(t)) return true;
-  return /[/~]\.(claude|codex|gemini)\b|brain-mcp\.json|google-key|gemini_api_key|google_api_key/.test(t);
+  return /[/~]\.(claude|codex|gemini)\b|brain-mcp\.json|google-key|inspect-key|gemini_api_key|google_api_key/.test(t);
 }
 function describe(tool, input = {}) {
   const clip = (v, n) => { const s = String(v ?? ""); return s.length > n ? `${s.slice(0, n)}\n… (${s.length - n} more characters)` : s; };
@@ -494,6 +503,106 @@ function controlLine(tool, a) {
   }
 }
 
+// ---------- web inspector: tabs shared with the AI Brain extension in the user's own browser ----------
+// The extension (folder "extension") is paired once with a code from Settings. It asks for work with
+// /api/inspect/ext/next (held open up to 25 s), does it with the browser's debugger on tabs the user
+// shared (clicked its button on), and answers with /api/inspect/ext/answer. The brain's web_ tools post
+// to /api/inspect/request with the task's key. Only while "Let the brain inspect your shared tabs" is on.
+const INSPECT_KEY_FILE = path.join(DATA, "inspect-key.json");
+const INSPECT_CMDS = new Set(["tabs", "html", "eval", "network", "response", "console", "cookies", "styles", "screenshot", "go"]);
+const INSPECT_MS = Number(process.env.BRAIN_INSPECT_MS || 45_000);
+const inspectQueue = [];          // steps waiting for the extension to ask
+const inspectSent = new Map();    // id -> step the extension has, waiting for its answer
+let inspectPoll = null;           // the extension's open /next request
+const ext = { seen: 0, tabs: [], version: "", browser: "" };
+const extConnected = () => Date.now() - ext.seen < 40_000;
+const inspectCode = () => readJson(INSPECT_KEY_FILE, null)?.code || "";
+function newInspectCode() {
+  const abc = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const b = crypto.randomBytes(20);
+  const code = [...b].map((x) => abc[x % abc.length]).join("").replace(/(.{5})(?!$)/g, "$1-");
+  writeJson(INSPECT_KEY_FILE, { code });
+  ext.seen = 0; ext.tabs = [];
+  endInspects("the extension was paired again");
+  return code;
+}
+const sameKey = (a, b) => !!a && !!b && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const inspectView = () => ({ paired: !!inspectCode(), connected: extConnected(), tabs: extConnected() ? ext.tabs : [], version: ext.version, browser: ext.browser, folder: path.join(ROOT, "extension") });
+function finishInspect(st, result) {
+  if (st.done) return;
+  st.done = true;
+  clearTimeout(st.timer);
+  inspectSent.delete(st.id);
+  const i = inspectQueue.indexOf(st);
+  if (i >= 0) inspectQueue.splice(i, 1);
+  st.resolve(result);
+}
+function endInspects(why) { for (const st of [...inspectQueue, ...inspectSent.values()]) finishInspect(st, { ok: false, why: `Stopped: ${why}.` }); }
+function handOut() {
+  if (!inspectPoll || !inspectQueue.length) return;
+  const st = inspectQueue.shift(), res = inspectPoll;
+  inspectPoll = null;
+  inspectSent.set(st.id, st);
+  json(res, 200, { id: st.id, cmd: st.cmd, args: st.args });
+}
+function askInspect(cmd, args) {
+  return new Promise((resolve) => {
+    if (!inspectCode()) return resolve({ ok: false, why: "The AI Brain browser extension is not paired yet. Ask the user to set it up: Settings > Web inspector." });
+    if (!extConnected()) return resolve({ ok: false, why: "The AI Brain browser extension is not connected. Ask the user to open their browser (with the extension installed and paired) and click the extension's button on the tab to inspect." });
+    const st = { id: newId(), cmd, args, resolve, done: false };
+    st.timer = setTimeout(() => finishInspect(st, { ok: false, why: "The browser extension did not answer in time." }), cmd === "go" ? Math.max(INSPECT_MS, 60_000) : INSPECT_MS);
+    inspectQueue.push(st);
+    handOut();
+  });
+}
+// What the extension says about itself: its version, browser and shared tabs. Tells the window when that changes.
+let extShown = "";
+function extSeen(body) {
+  ext.seen = Date.now();
+  if (Array.isArray(body?.tabs)) ext.tabs = body.tabs.slice(0, 50).map((t) => ({ id: Number(t?.id) || 0, title: String(t?.title || "").slice(0, 200), url: String(t?.url || "").slice(0, 500) }));
+  if (body?.version) ext.version = String(body.version).slice(0, 20);
+  if (body?.browser) ext.browser = String(body.browser).slice(0, 40);
+  const now = JSON.stringify(inspectView());
+  if (now !== extShown) { extShown = now; send({ type: "inspect", ...inspectView() }); }
+}
+// Notices the extension going away (no request for a while).
+setInterval(() => { if (extShown && JSON.stringify(inspectView()) !== extShown) { extShown = JSON.stringify(inspectView()); send({ type: "inspect", ...inspectView() }); } }, 10_000).unref();
+
+async function extRoute(req, res, p) {
+  const origin = String(req.headers.origin || "");
+  const head = { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Headers": "Content-Type, X-Brain-Key", "Access-Control-Allow-Methods": "POST" };
+  const out = (code, obj) => { res.writeHead(code, head); res.end(JSON.stringify(obj)); };
+  if (!/^chrome-extension:\/\/[a-p]{32}$/.test(origin) && !(process.env.BRAIN_TEST_EXT_ORIGIN && origin === process.env.BRAIN_TEST_EXT_ORIGIN)) { res.writeHead(403); res.end("Forbidden"); return; }
+  if (req.method === "OPTIONS") { res.writeHead(204, head); res.end(); return; }
+  if (req.method !== "POST") return out(405, { error: "POST only" });
+  const code = inspectCode();
+  const given = String(req.headers["x-brain-key"] || "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/(.{5})(?!$)/g, "$1-");
+  if (!code || !sameKey(given, code)) return out(403, { error: "Wrong pairing code. Copy the code from AI Brain: Settings > Web inspector." });
+  let body;
+  try { body = JSON.parse((await readBody(req, (p === "/api/inspect/ext/answer" ? 16 : 1) * 1024 * 1024)).toString() || "{}"); }
+  catch { return out(400, { error: "Bad request" }); }
+  if (p === "/api/inspect/ext/hello") { extSeen(body); return out(200, { ok: true, app: "ai-brain", version: VERSION, enabled: loadSettings().inspectBrain }); }
+  if (p === "/api/inspect/ext/next") {
+    extSeen(body);
+    if (inspectPoll) { const old = inspectPoll; inspectPoll = null; try { old.writeHead(200, head); old.end(JSON.stringify({ none: true })); } catch { /* gone */ } }
+    // Answers carry the extension's origin (it reads them with fetch).
+    inspectPoll = { writeHead: (c) => res.writeHead(c, head), end: (s) => res.end(s), res };
+    const mine = inspectPoll;
+    res.on("close", () => { if (inspectPoll === mine) inspectPoll = null; });
+    handOut();
+    setTimeout(() => { if (inspectPoll === mine) { inspectPoll = null; out(200, { none: true }); } }, 25_000);
+    return;
+  }
+  if (p === "/api/inspect/ext/answer") {
+    extSeen({});
+    const st = inspectSent.get(String(body.id || ""));
+    if (!st) return out(404, { error: "That step was already answered or has ended." });
+    finishInspect(st, body.result && typeof body.result === "object" ? body.result : { ok: false, why: "no answer" });
+    return out(200, { ok: true });
+  }
+  return out(404, { error: "Not found" });
+}
+
 // When the last window closes, give it a moment (a reload) and then say no to anything still waiting.
 let noWindowTimer = null;
 function windowsChanged() {
@@ -513,7 +622,8 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
 
   // The program in the middle: a new key (and a new task id, so the window starts fresh) for this task only.
   endControls("a new task started");
-  ctlKey = s.appsBrain ? crypto.randomBytes(24).toString("hex") : null;
+  endInspects("a new task started");
+  ctlKey = s.appsBrain || s.inspectBrain ? crypto.randomBytes(24).toString("hex") : null;
   ctlTask = crypto.randomBytes(8).toString("hex");
   // access "ask" or "auto": a new key for this task only; old keys stop working.
   const ask = s.access === "ask" || s.access === "auto";
@@ -592,6 +702,11 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
           const tool = String(c.name).replace("mcp__ai-brain__", "");
           if (tool === "Read") { emit({ type: "log", level: "info", text: `Reading file ${c.input?.file_path || ""}` }); continue; }
           if (tool.startsWith("app_")) { emit({ type: "log", level: "info", text: `Program: ${controlLine(tool, c.input || {})}` }); continue; }
+          if (tool.startsWith("web_")) {
+            const a = c.input || {}, what = a.url || a.selector || a.expression || a.filter || (a.request ? `#${a.request}` : "");
+            emit({ type: "log", level: "info", text: `Web inspector: ${tool.slice(4)}${what ? ` ${String(what).replace(/\s+/g, " ").slice(0, 100)}` : ""}` });
+            continue;
+          }
           if (!HELPER_TOOLS.has(tool)) { // its own tools (files, search, commands): a line in the log
             const what = c.input?.command || c.input?.file_path || c.input?.pattern || "";
             emit({ type: "log", level: "info", text: `${tool}${what ? `: ${String(what).replace(/\s+/g, " ").slice(0, 160)}` : ""}` });
@@ -680,6 +795,7 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
     brain = null;
     ctlKey = null;
     endControls("the task ended");
+    endInspects("the task ended");
     runKey = null; allowFilesThisRun = false;
     denyAllApprovals("the task ended");
     live = ""; pushStream(true);
@@ -911,6 +1027,8 @@ const idle = () => !brain && !directActive() && !direct.video && !queue.length;
 const server = http.createServer(async (req, res) => {
   try {
     if (!HOSTS.has(req.headers.host)) { res.writeHead(403); res.end("Forbidden"); return; }
+    // The browser extension comes from its own origin; it is let in only with the pairing code.
+    if (req.url.startsWith("/api/inspect/ext/")) { await extRoute(req, res, req.url.split("?")[0]); return; }
     if (req.method !== "GET" && !ORIGINS.has(req.headers.origin)) { res.writeHead(403); res.end("Forbidden"); return; }
     const url = new URL(req.url, `http://${req.headers.host}`);
     const p = url.pathname;
@@ -947,6 +1065,7 @@ const server = http.createServer(async (req, res) => {
       if (p === "/api/stats") return json(res, 200, lifetimeStats());
       if (p === "/api/music") return json(res, 200, await musicStatus());
       if (p === "/api/discord") return json(res, 200, await discordStatus());
+      if (p === "/api/inspect") return json(res, 200, inspectView());
       if (p === "/api/music/art") {
         const a = await musicArt();
         if (!a) { res.writeHead(404, BASE_HEADERS); return res.end(); }
@@ -984,6 +1103,24 @@ const server = http.createServer(async (req, res) => {
       catch (e) { if (e instanceof HttpError) throw e; return json(res, 400, { error: "Bad request" }); }
       if (!body || typeof body !== "object") return json(res, 400, { error: "Bad request" });
 
+      if (p === "/api/inspect/request") { // from the brain's web_ tools; waits for the browser extension
+        const key = String(req.headers["x-brain-key"] || "");
+        if (!ctlKey || !brain || !sameKey(key, ctlKey)) return json(res, 403, { ok: false, why: "Not allowed: wrong key, or no task is running." });
+        if (!loadSettings().inspectBrain) return json(res, 200, { ok: false, why: "The user switched off \"Let the brain inspect your shared tabs\" in Settings." });
+        const cmd = String(body.cmd || "");
+        if (!INSPECT_CMDS.has(cmd)) return json(res, 400, { ok: false, why: "Unknown step." });
+        const args = body.args && typeof body.args === "object" && !Array.isArray(body.args) ? body.args : {};
+        let gone = false;
+        res.on("close", () => { gone = !res.writableEnded; });
+        const r = await askInspect(cmd, args);
+        if (gone) return;
+        return json(res, 200, r && typeof r === "object" ? r : { ok: false, why: "no answer" });
+      }
+      if (p === "/api/inspect/code") { // Settings: show the pairing code, or make a new one
+        const code = body.renew === true || !inspectCode() ? newInspectCode() : inspectCode();
+        send({ type: "inspect", ...inspectView() });
+        return json(res, 200, { code, ...inspectView() });
+      }
       if (p === "/api/apps/control") { // from the brain's app_ tools; waits for the desktop window
         const key = String(req.headers["x-brain-key"] || "");
         const ok = !!ctlKey && !!brain && key.length === ctlKey.length && crypto.timingSafeEqual(Buffer.from(key), Buffer.from(ctlKey));
@@ -1103,6 +1240,7 @@ const server = http.createServer(async (req, res) => {
         if (queue.length) { queue = []; sendQueue(); }
         denyAllApprovals("you pressed Stop");
         endControls("the user pressed Stop");
+        endInspects("the user pressed Stop");
         if (brain) { stoppedByUser = true; emit({ type: "log", level: "warn", text: "Stopped by you." }); killTree(brain); }
         return json(res, 200, { ok: true });
       }
@@ -1168,6 +1306,7 @@ const server = http.createServer(async (req, res) => {
         if (settings.access === "auto") { for (const a of [...approvals.values()]) finishApproval(a, true, "always allow was switched on"); }
         else if (settings.access !== "ask") denyAllApprovals("file and command access was switched off");
         if (!settings.appsBrain) endControls("the user switched off \"Let the brain use the program in the middle\"");
+        if (!settings.inspectBrain) endInspects("the user switched off \"Let the brain inspect your shared tabs\"");
         if (body.customBg === null) for (const f of fs.readdirSync(CUSTOM)) { try { fs.unlinkSync(path.join(CUSTOM, f)); } catch {} }
         writeMcpConfig(settings);
         statusAt = 0;

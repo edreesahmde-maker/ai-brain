@@ -476,6 +476,19 @@
         <span class="row-btns"><button class="btn small" id="set-folder-add">Add folder…</button></span></div>
       <label class="row"><span>Let the brain use the program in the middle<small>Claude can see the program shown in the middle of AI Brain (Blender, an editor, a browser…) and use it with your mouse and keyboard, and open programs from your Apps panel. It can then do anything you could do in that program, so only ask for what you want done. Move the mouse to take over at any time: the brain stops. Only works in the AI Brain desktop window.</small></span><input type="checkbox" class="switch" id="set-apps-brain"></label>
     </section>
+    <section id="set-inspect">
+      <h3>Web inspector (your browser)</h3>
+      <label class="row"><span>Let the brain inspect your shared tabs<small>Like a web developer's DevTools: Claude can read the page code, network requests, console, cookies and styles, run JavaScript and take screenshots - but only in tabs where you clicked the AI Brain extension button. Those tabs are signed in as you, so only share pages you want Claude to see. Your browser shows a "debugging" bar while a tab is shared.</small></span><input type="checkbox" class="switch" id="set-inspect-brain"></label>
+      <div class="row col"><span>Browser extension<small id="set-inspect-state">Not set up yet</small></span>
+        <ol class="inspect-steps">
+          <li>In Brave (or Chrome / Edge) open <code>brave://extensions</code> and switch on <b>Developer mode</b> (top right).</li>
+          <li>Click <b>Load unpacked</b> and pick this folder: <code id="set-inspect-folder" dir="ltr">…</code></li>
+          <li>Click the AI Brain extension button (pin it from the puzzle-piece menu), paste the pairing code below and press Pair.</li>
+          <li>On a page you want Claude to inspect, click the extension button and press <b>Share this tab</b>.</li>
+        </ol>
+        <span class="row-btns"><button class="btn small" id="set-inspect-show">Show pairing code</button><button class="btn small" id="set-inspect-copy" hidden>Copy</button><button class="btn small" id="set-inspect-renew" hidden title="The old code stops working; pair the extension again">New code</button></span>
+        <code class="inspect-code" id="set-inspect-code" hidden></code></div>
+    </section>
     <section>
       <h3>Answers</h3>
       <label class="row"><span>Answer length<small>How long Claude's final answers should be</small></span>

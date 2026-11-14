@@ -689,6 +689,7 @@ try {
 
   await accessTests();
   await appsTests();
+  await inspectApiTests();
   themeMoveTest();
 } catch (e) {
   failed++;
@@ -828,6 +829,61 @@ async function appsTests() {
   ok(!t.slice.some((e) => e.type === "call"), "steps are not shown as helper calls");
   ok(t.fin && !t.fin.isError, "the task finishes normally");
   await post("/api/settings", { appsBrain: false });
+}
+
+// The web inspector's doors: only the paired extension gets in; the brain needs its task key.
+// (The real extension in a real browser is tested by test/inspect-test.mjs.)
+async function inspectApiTests() {
+  console.log("web inspector (server)");
+  const EXT = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+  const extPost = (p, body, origin = EXT, code = "") => fetch(BASE + p, { method: "POST", headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}), ...(code ? { "X-Brain-Key": code } : {}) }, body: JSON.stringify(body ?? {}) }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+  ok((await get("/api/settings")).body.inspectBrain === false, "it is off by default");
+  let t = await task("Off again [tool]");
+  const sys = (a) => a.args[a.args.indexOf("--append-system-prompt") + 1];
+  let a = brainArgs().at(-1);
+  ok(!a.args.some((x) => /web_/.test(x)) && !/WEB INSPECTOR/.test(sys(a)), "while off the brain has no web tools and no word about them");
+  ok((await extPost("/api/inspect/ext/hello", {}, EXT, "AAAAA-AAAAA-AAAAA-AAAAA")).status === 403, "before pairing nothing gets in");
+  const code = (await post("/api/inspect/code", {})).body.code;
+  ok((await post("/api/inspect/code", {}, { "Content-Type": "application/json" })).status === 403, "other websites cannot get the pairing code");
+  ok((await extPost("/api/inspect/ext/hello", {}, "https://evil.example", code)).status === 403, "a website with the right code is still refused");
+  ok((await extPost("/api/inspect/ext/hello", {}, "", code)).status === 403, "a request without an origin is refused");
+  ok((await extPost("/api/inspect/ext/hello", {}, EXT, "WRONG-WRONG-WRONG-WRONG")).status === 403, "an extension with a wrong code is refused");
+  const h = await extPost("/api/inspect/ext/hello", { version: "1.0.0", browser: "Brave", tabs: [] }, EXT, code.toLowerCase());
+  ok(h.status === 200 && h.body.app === "ai-brain" && h.body.enabled === false, "the paired extension gets in (any letter case) and is told the setting is off", JSON.stringify(h));
+  ok((await get("/api/inspect")).body.connected === true, "Settings shows it connected");
+  await post("/api/settings", { inspectBrain: true });
+  const from = events.length;
+  await post("/api/task", { text: "Look at the page [hang]" });
+  await waitFor((e) => e.type === "stream" && e.text.length > 10, 8000, from);
+  a = brainArgs().at(-1);
+  const env = JSON.parse(fs.readFileSync(path.join(DATA, "brain-mcp.json"), "utf8")).mcpServers["ai-brain"].env;
+  ok(env.AI_BRAIN_INSPECT === "1" && /^[0-9a-f]{48}$/.test(env.AI_BRAIN_CONTROL_KEY || "") && !JSON.stringify(env).includes(code), "a task gets the web tools and a key, never the pairing code");
+  ok(/WEB INSPECTOR/.test(sys(a)) && /signed in as the user/.test(sys(a)) && /Never put passwords, cookie values/.test(sys(a)) && a.args.includes("mcp__ai-brain__web_eval"), "the brain is told what the tools do and the rules");
+  const req = (body, k = env.AI_BRAIN_CONTROL_KEY) => post("/api/inspect/request", body, { ...H, "X-Brain-Key": k });
+  ok((await req({ cmd: "tabs" }, "x".repeat(48))).status === 403, "the brain's steps need the task key");
+  ok((await req({ cmd: "rm -rf" })).status === 400, "unknown steps are refused");
+  // The extension asks for work; the brain's step reaches it; its answer goes back.
+  const poll = extPost("/api/inspect/ext/next", { tabs: [{ id: 7, title: "Shop", url: "https://shop.example/" }] }, EXT, code);
+  await sleep(200);
+  const step = req({ cmd: "html", args: { selector: "#cart" } });
+  const job = (await poll).body;
+  ok(job?.cmd === "html" && job.args.selector === "#cart" && !!job.id, "a step reaches the waiting extension", JSON.stringify(job));
+  ok((await get("/api/inspect")).body.tabs[0]?.title === "Shop", "Settings lists the shared tab");
+  ok((await extPost("/api/inspect/ext/answer", { id: job.id, result: { ok: true, html: "<div id=cart>2 items</div>" } }, EXT, code)).status === 200, "the extension answers");
+  const got = await step;
+  ok(got.body?.ok && got.body.html === "<div id=cart>2 items</div>", "the answer reaches the brain", JSON.stringify(got.body));
+  // Without a waiting extension, a step waits for its next ask; Stop ends it.
+  const late = req({ cmd: "tabs" });
+  await sleep(300);
+  await post("/api/stop");
+  ok(/Stopped/.test((await late).body?.why || ""), "Stop ends a step the extension has not picked up");
+  await waitFor((e) => e.type === "busy" && e.value === false, 8000, from);
+  ok((await req({ cmd: "tabs" })).status === 403, "after the task the key no longer works");
+  // A new code locks the old one out.
+  await post("/api/inspect/code", { renew: true });
+  ok((await extPost("/api/inspect/ext/hello", {}, EXT, code)).status === 403, "a new pairing code locks the old one out");
+  ok(!fs.readFileSync(path.join(DATA, "inspect-key.json"), "utf8").includes(code), "the old code is gone from the computer");
+  await post("/api/settings", { inspectBrain: false });
 }
 
 // A saved theme that was removed in 3.1 (the three Black Clover ones) opens as Berserk.

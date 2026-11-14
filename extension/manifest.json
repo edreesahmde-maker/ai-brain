@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "AI Brain inspector",
+  "version": "1.0.0",
+  "description": "Lets the AI Brain app on this computer inspect the tabs you share with it (page code, network, console, cookies, styles).",
+  "minimum_chrome_version": "116",
+  "permissions": ["debugger", "tabs", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "AI Brain inspector", "default_icon": { "128": "icon.png" } },
+  "icons": { "128": "icon.png" }
+}

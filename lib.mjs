@@ -77,6 +77,7 @@ export const DEFAULT_SETTINGS = {
   chatgptEnabled: false,
   flowBrain: true,        // the brain may use the Google Flow window (open in AI Brain) to make videos
   appsBrain: false,       // the brain may use the program in the middle of AI Brain with the mouse and keyboard
+  inspectBrain: false,    // the brain may inspect tabs the user shared with the AI Brain extension in their own browser
   sounds: true,
   notify: false,
   fontSize: 14,           // 12-18
@@ -112,6 +113,7 @@ const RULES = {
   chatgptEnabled: (v) => typeof v === "boolean",
   flowBrain: (v) => typeof v === "boolean",
   appsBrain: (v) => typeof v === "boolean",
+  inspectBrain: (v) => typeof v === "boolean",
   sounds: (v) => typeof v === "boolean",
   notify: (v) => typeof v === "boolean",
   fontSize: (v) => Number.isInteger(v) && v >= 12 && v <= 18,

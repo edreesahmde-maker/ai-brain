@@ -709,6 +709,7 @@
     $("#set-chatgpt").checked = !!s.chatgptEnabled;
     $("#set-flow-brain").checked = !!s.flowBrain;
     $("#set-apps-brain").checked = !!s.appsBrain;
+    $("#set-inspect-brain").checked = !!s.inspectBrain;
     $("#set-sounds").checked = !!s.sounds;
     $("#set-notify").checked = !!s.notify;
     for (const r of $$('input[name="accent"]')) r.checked = r.value === s.accent;
@@ -764,6 +765,33 @@
   $("#set-chatgpt").addEventListener("change", async (e) => { await saveSetting({ chatgptEnabled: e.target.checked }); refreshStatus(true); });
   $("#set-flow-brain").addEventListener("change", (e) => saveSetting({ flowBrain: e.target.checked }));
   $("#set-apps-brain").addEventListener("change", (e) => saveSetting({ appsBrain: e.target.checked }));
+  $("#set-inspect-brain").addEventListener("change", (e) => saveSetting({ inspectBrain: e.target.checked }));
+
+  // ---------- web inspector: the AI Brain extension in the user's own browser ----------
+  function paintInspect(v) {
+    if (!v) return;
+    $("#set-inspect-folder").textContent = v.folder || "";
+    const tabs = v.tabs || [];
+    $("#set-inspect-state").textContent = !v.paired ? "Not set up yet. Follow the steps below."
+      : !v.connected ? "Paired, but the extension is not connected now. Open your browser to connect it."
+      : `Connected${v.browser ? ` (${v.browser})` : ""}. ${tabs.length ? `Shared: ${tabs.map((t) => t.title || t.url).slice(0, 3).join(", ")}${tabs.length > 3 ? ` and ${tabs.length - 3} more` : ""}` : "No tab is shared yet."}`;
+  }
+  async function loadInspect() { try { paintInspect(await api("/api/inspect")); } catch { /* shown next time */ } }
+  async function showInspectCode(renew) {
+    const r = await tryApi("/api/inspect/code", { renew });
+    if (!r?.code) return;
+    $("#set-inspect-code").textContent = r.code;
+    $("#set-inspect-code").hidden = $("#set-inspect-copy").hidden = $("#set-inspect-renew").hidden = false;
+    $("#set-inspect-show").hidden = true;
+    paintInspect(r);
+    if (renew) toast("New pairing code. Paste it in the extension again.", "ok");
+  }
+  $("#set-inspect-show").addEventListener("click", () => showInspectCode(false));
+  $("#set-inspect-renew").addEventListener("click", () => showInspectCode(true));
+  $("#set-inspect-copy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText($("#set-inspect-code").textContent); toast("Pairing code copied.", "ok"); } catch { toast("Could not copy. Select the code and copy it.", "err"); }
+  });
+  loadInspect();
   $("#set-video-model").addEventListener("change", (e) => saveSetting({ videoModel: e.target.value }));
   $("#set-video-limit").addEventListener("change", (e) => {
     const n = Math.round(Number(e.target.value));
@@ -1813,6 +1841,7 @@
       case "media": loadMedia(); break;
       case "flow-open": if (window.Station?.hasShell?.()) window.Station.openFlow(true); break;
       case "app-control": window.Station?.control?.(ev); break;
+      case "inspect": paintInspect(ev); break;
       case "sessions": loadSessionsSoon(); break;
       case "settings": applySettings(ev.settings); break;
       case "title": S.session.title = ev.title || ""; paintTitle(); break;

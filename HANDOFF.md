@@ -29,8 +29,30 @@ On GitHub (private): https://github.com/edreesahmde-maker/ai-brain (branch maste
 - NOT yet tried with the real Claude on a real program (Blender etc.). The tools and the whole path are tested
   with the fake Claude and the test window.
 
+## Done on 2026-11-14: web inspector in the user's OWN browser (Brave) - extension
+- Why an extension: since Chrome 136 (Brave/Edge too) `--remote-debugging-port` is ignored on the normal profile,
+  so the Flow approach cannot reach the user's logged-in browser. The user chose the extension (their logins).
+- `extension/` (MV3, load unpacked): popup pairs with the code from Settings > Web inspector and shares the
+  current tab ("Share this tab" / "Stop sharing"); background.js attaches `chrome.debugger` ONLY to shared
+  tabs (browser shows its debugging bar; Cancel there = unshared), keeps network (500) and console (300)
+  from the moment of sharing, and long-polls AI Brain (`/api/inspect/ext/next`, 25 s; alarm every minute).
+  Only talks to http://127.0.0.1 (default port 4777). Browser pages (chrome://, store) cannot be shared.
+- Server: setting `inspectBrain` (default OFF). Pairing code in DATA/inspect-key.json (gitignored, in
+  forbidden(), never in brain-mcp.json). Extension routes /api/inspect/ext/{hello,next,answer} are let in
+  before the Origin check only from `chrome-extension://<32 a-p>` + the code. Brain: POST /api/inspect/request
+  with the task key (same ctlKey as app control; issued when appsBrain OR inspectBrain). GET /api/inspect,
+  POST /api/inspect/code {renew}. SSE "inspect" updates Settings.
+- Brain tools (server.mjs, env AI_BRAIN_INSPECT=1): web_tabs, web_html, web_eval (replMode; promises awaited),
+  web_network, web_response, web_console, web_cookies (values only with include_values), web_styles,
+  web_screenshot, web_go (reload / open http(s)). System prompt "WEB INSPECTOR" with rules (read only unless
+  asked; no passwords/cookie values/tokens in answers unless asked).
+- NOT yet tried with the real Claude, or in the user's own Brave profile. Tested with the real extension in an
+  empty Brave profile (`test/inspect-test.mjs`).
+
 ## Tests
-- `node test/api-test.mjs`    -> 256 passed, 0 failed (30 new: app control setting, key, relay, tool server)
+- `node test/inspect-test.mjs` -> 43 passed, 0 failed (real extension in a throw-away Brave profile, local test
+  page, real server, the brain's tool server: pairing, share, every web_ tool, refusals, unshare, key, new code)
+- `node test/api-test.mjs`    -> 277 passed, 0 failed (30 app control + 21 web inspector checks)
 - `node test/ui-test.mjs`     -> 487 passed, 0 failed (about 6 minutes)
 - `node test/shell-test.mjs`  -> 62 passed, 0 failed (real desktop window against a test server; Google Flow
   with a local test page in an empty browser profile, incl. switching to "open only to sign in" and back;
