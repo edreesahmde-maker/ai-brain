@@ -10,6 +10,9 @@
   const NAME = { claude: "Claude", gemini: "Gemini", chatgpt: "ChatGPT", you: "You" };
   const MODEL = { auto: "your Claude default", fable: "Fable", opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
   const HELPERS = ["gemini", "chatgpt"];
+  // Which AI is the brain (Settings > The brain > Brain): Claude, or ChatGPT. Old events have no brain: Claude.
+  const brainId = () => (S.settings?.brain === "chatgpt" ? "chatgpt" : "claude");
+  const brainName = () => NAME[brainId()];
   const VIDEO_RE = /\.(mp4|webm|mov)$/i;
 
   const store = {
@@ -162,9 +165,9 @@
     paintApproval();
     chime(true);
     if (document.hidden) {
-      document.title = "✋ Claude is waiting for you – AI Brain";
+      document.title = `✋ ${brainName()} is waiting for you – AI Brain`;
       if (S.settings?.notify && "Notification" in window && Notification.permission === "granted") {
-        try { const n = new Notification("AI Brain: Claude wants to make a change", { body: short(`${a.title}: ${a.path || a.detail}`, 140), icon: "icon.svg", tag: "ai-brain-approve" }); n.onclick = () => { window.focus(); n.close(); }; } catch { /* unavailable */ }
+        try { const n = new Notification(`AI Brain: ${brainName()} wants to make a change`, { body: short(`${a.title}: ${a.path || a.detail}`, 140), icon: "icon.svg", tag: "ai-brain-approve" }); n.onclick = () => { window.focus(); n.close(); }; } catch { /* unavailable */ }
       }
     }
   }
@@ -174,7 +177,7 @@
     if (!a) { approve.shown = null; if (apDlg.open) apDlg.close(); return; }
     const fresh = approve.shown !== a.id;
     approve.shown = a.id;
-    $("#ap-title").textContent = a.title || "Claude wants to make a change";
+    $("#ap-title").textContent = a.title || `${brainName()} wants to make a change`;
     $("#ap-tool").textContent = a.tool || "";
     $("#ap-path-row").hidden = !a.path;
     $("#ap-path").textContent = a.path || "";
@@ -441,7 +444,7 @@
     const list = [act("copy", "Copy", () => copyText(ev.text))];
     if (!ev.isError) {
       list.push(act("speak", "Read aloud", (b) => speak(md.innerText, b)));
-      list.push(act("bookmark", "Save", () => saveAnswer("claude", ev.text, images)));
+      list.push(act("bookmark", "Save", () => saveAnswer(ev.brain || "claude", ev.text, images)));
     }
     if (task) {
       list.push(act("retry", "Try again", () => sendTask(task.text, (task.files || []).map((f) => f.path)), "Send the same task again"));
@@ -450,7 +453,7 @@
     const took = ev.seconds != null ? ` · took ${dur(ev.seconds)}` : "";
     return h("div", { class: `msg claude${ev.isError ? " err" : ""}` }, avatar(),
       h("div", { class: "body" },
-        h("div", { class: "who" }, h("b", { text: "Claude" }), h("span", { text: `${clock(ev.t)}${took}` })),
+        h("div", { class: "who" }, h("b", { text: NAME[ev.brain] || "Claude" }), h("span", { text: `${clock(ev.t)}${took}` })),
         h("div", { class: "card" }, md, imgs(images)),
         actions("", list)));
   }
@@ -458,24 +461,25 @@
   // ---------- helper panels (left) ----------
   function addHelper(who, el) {
     const log = $(`#${who}-log`);
+    if (!log) { addToThread(el); return; } // Claude as a helper (ChatGPT is the brain) has no panel: in the chat
     if (S.replaying) { log.append(el); return; }
     log.append(el);
     log.scrollTop = log.scrollHeight;
   }
   function onCall(ev) {
-    const fromYou = ev.from === "you";
+    const fromYou = ev.from === "you", asker = fromYou ? "You" : NAME[ev.from] || "Claude";
     S.stats.calls++;
     const text = h("div", { class: "hm-text", dir: "auto", text: ev.prompt });
     const ask = h("div", { class: `hm ask ${fromYou ? "from-you" : "from-claude"}` },
-      h("div", { class: "hm-label" }, h("b", { text: fromYou ? "You" : "Claude" }), h("span", { text: `to ${NAME[ev.to]} · ${clock(ev.t)}` })),
+      h("div", { class: "hm-label" }, h("b", { text: asker }), h("span", { text: `to ${NAME[ev.to]} · ${clock(ev.t)}` })),
       h("div", { class: "hm-body" }, clampable(text, isLong(ev.prompt, 420, 7))));
     const reply = h("div", { class: "hm reply" }, h("div", { class: "hm-label" }, h("b", { text: NAME[ev.to] })), h("div", { class: "hm-body" }, typing()));
     addHelper(ev.to, ask);
     addHelper(ev.to, reply);
     pending.set(ev.id, { el: reply, who: ev.to, from: ev.from, t: ev.t });
     if (fromYou) noteTitle(ev.prompt);
-    else addToThread(msgSys(/^Generate image:/.test(ev.prompt) ? `Claude asked ${NAME[ev.to]} to make a picture` : `Claude asked ${NAME[ev.to]} for help`));
-    logLine(`${fromYou ? "You" : "Claude"} → ${NAME[ev.to]}: ${short(ev.prompt, 70)}`, ev.to, ev.t);
+    else addToThread(msgSys(/^Generate image:/.test(ev.prompt) ? `${asker} asked ${NAME[ev.to]} to make a picture` : `${asker} asked ${NAME[ev.to]} for help`));
+    logLine(`${asker} → ${NAME[ev.to]}: ${short(ev.prompt, 70)}`, ev.to, ev.t);
     if (!S.replaying) { refreshCalling(); paintStats(); }
   }
   function onReply(ev) {
@@ -501,7 +505,7 @@
       const pics = imgs(images);
       if (pics) body.append(pics);
       for (const u of images) S.stats.images.add(u);
-      if (p?.from === "claude") S.taskImages.push(...images);
+      if (p?.from && p.from !== "you") S.taskImages.push(...images);
       const secs = p?.t && ev.t ? Math.max(0, Math.round((ev.t - p.t) / 1000)) : null;
       el.append(actions(`${clock(ev.t)}${secs != null ? ` · ${dur(secs)}` : ""}`, [
         act("copy", "Copy", () => copyText(text)),
@@ -512,7 +516,7 @@
     logLine(ev.stopped ? `${NAME[ev.to]}: stopped` : ev.isError ? `${NAME[ev.to]} failed: ${short(text, 80)}` : `${NAME[ev.to]} answered`, ev.isError ? "error" : ev.to, ev.t);
     if (!S.replaying) {
       const log = $(`#${ev.to}-log`);
-      log.scrollTop = log.scrollHeight;
+      if (log) log.scrollTop = log.scrollHeight;
       refreshCalling();
       paintStats();
       if (ev.id === S.studioId) studioDone(ev);
@@ -607,7 +611,7 @@
   function phaseText() {
     if (!S.busy) return "Ready";
     if (S.phase === "helpers") {
-      const who = [...new Set([...pending.values()].filter((p) => p.from === "claude").map((p) => NAME[p.who]))];
+      const who = [...new Set([...pending.values()].filter((p) => p.from !== "you").map((p) => NAME[p.who]))];
       if (who.length) return `Asking ${who.join(" and ")}…`;
     }
     return S.phase === "idle" ? "Working…" : PHASES[S.phase] || "Working…";
@@ -620,7 +624,7 @@
     const sub = $("#stage-sub");
     if (S.busy) sub.textContent = `Working for ${mmss(secs)}${S.queue.length ? ` · ${S.queue.length} waiting` : ""}`;
     else if (S.direct.gemini || S.direct.chatgpt) sub.textContent = `Waiting for ${HELPERS.filter((w) => S.direct[w]).map((w) => NAME[w]).join(" and ")} (direct message)`;
-    else if (S.settings) sub.textContent = `Model: ${MODEL[S.settings.brainModel] || S.settings.brainModel} · Effort: ${S.settings.effort === "auto" ? "automatic" : S.settings.effort}`;
+    else if (S.settings) sub.textContent = `${brainId() === "chatgpt" ? "Brain: ChatGPT" : `Model: ${MODEL[S.settings.brainModel] || S.settings.brainModel}`} · Effort: ${S.settings.effort === "auto" ? "automatic" : S.settings.effort}`;
   }
   setInterval(() => { if (S.busy) paintStage(); }, 1000);
   function paintSend() {
@@ -658,25 +662,27 @@
       }
       tips.push(`${label}: ${Math.round(pct)}% used${when}`);
     }
-    $("#usage").title = tips.length ? `Your Claude plan\n${tips.join("\n")}` : "How much of your Claude plan limit is used. Appears after the first task.";
+    $("#usage").title = tips.length ? `Your Claude plan\n${tips.join("\n")}` : "How much of your Claude plan limit is used. Appears after a task Claude did.";
   }
   function paintDots() {
     for (const who of ["claude", ...HELPERS]) {
       const st = S.status?.[who];
-      const busy = who === "claude" ? S.busy : waitingOn(who);
+      const busy = who === brainId() ? S.busy || waitingOn(who) : waitingOn(who);
       const cls = busy ? "busy" : !st || st.off ? "" : st.ok ? "ok" : "bad";
       const dots = [$(`#chips .chip[data-who="${who}"] .dot`), $(`#${who}-dot`)];
       for (const d of dots) if (d) d.className = `dot ${cls}`;
     }
   }
   function paintStatus() {
-    const st = S.status, on = !!S.settings?.chatgptEnabled;
+    const st = S.status, on = !!S.settings?.chatgptEnabled, gpt = brainId() === "chatgpt";
     $("#p-chatgpt").classList.toggle("off", !on);
     window.Station?.chatgpt?.(on);
-    $("#chips .chip[data-who='chatgpt']").hidden = !on;
-    $("#empty-sub").textContent = on
-      ? "Type a task below. Claude plans it, asks ChatGPT and Gemini for help when it is useful, and gives you one answer."
-      : "Type a task below. Claude plans it, asks Gemini for help when it is useful, and gives you one answer.";
+    $("#chips .chip[data-who='chatgpt']").hidden = !on && !gpt;
+    $("#empty-sub").textContent = gpt
+      ? "Type a task below. ChatGPT is the brain: it plans it, asks Claude and Gemini for help when it is useful, and gives you one answer."
+      : on
+        ? "Type a task below. Claude plans it, asks ChatGPT and Gemini for help when it is useful, and gives you one answer."
+        : "Type a task below. Claude plans it, asks Gemini for help when it is useful, and gives you one answer.";
     $("#set-chatgpt-state").textContent = !on ? "Off" : st?.chatgpt && !st.chatgpt.off ? st.chatgpt.detail : "Checking…";
     $("#row-chatgpt-login").hidden = !(on && st?.chatgpt && !st.chatgpt.off && !st.chatgpt.ok);
     $("#chatgpt-detail").textContent = !on ? "Switched off" : st?.chatgpt && !st.chatgpt.off ? st.chatgpt.detail : "Checking…";
@@ -731,6 +737,10 @@
     $("#row-dim").hidden = !s.customBg;
     if (active !== $("#set-dim")) $("#set-dim").value = s.bgDim;
     $("#set-dim-val").textContent = `${s.bgDim}%`;
+    $("#set-brain").value = s.brain === "chatgpt" ? "chatgpt" : "claude";
+    $("#set-brain-note").textContent = s.brain === "chatgpt"
+      ? "ChatGPT plans every task and uses your ChatGPT plan. Claude and Gemini are its helpers."
+      : "Claude plans every task and uses your Claude plan. ChatGPT and Gemini are its helpers.";
     $("#set-model").value = s.brainModel;
     $("#set-effort").value = s.effort;
     $("#set-memory").value = String(s.memoryLimit ?? 100);
@@ -787,6 +797,7 @@
   $("#set-font").addEventListener("change", (e) => saveSetting({ fontSize: Number(e.target.value) }));
   $("#set-dim").addEventListener("input", (e) => { root.style.setProperty("--dim", String(e.target.value / 100)); $("#set-dim-val").textContent = `${e.target.value}%`; });
   $("#set-dim").addEventListener("change", (e) => saveSetting({ bgDim: Number(e.target.value) }));
+  $("#set-brain").addEventListener("change", async (e) => { await saveSetting({ brain: e.target.value }); refreshStatus(true); });
   $("#set-model").addEventListener("change", (e) => saveSetting({ brainModel: e.target.value }));
   $("#set-effort").addEventListener("change", (e) => saveSetting({ effort: e.target.value }));
   $("#set-memory").addEventListener("change", (e) => saveSetting({ memoryLimit: Number(e.target.value) }));
@@ -900,10 +911,11 @@
   function paintAccess(s) {
     const mode = ["ask", "auto"].includes(s.access) ? s.access : "read";
     $("#set-access").value = mode;
+    const who = brainName();
     $("#set-access-note").textContent = mode === "auto"
-      ? "Always allow: Claude writes files and runs commands without asking. Everything it does is listed in Activity."
-      : mode === "ask" ? "Claude may write files and run commands. Every change waits for your Allow."
-      : "Read only: Claude can read files but not change anything";
+      ? `Always allow: ${who} writes files and runs commands without asking. Everything it does is listed in Activity.`
+      : mode === "ask" ? `${who} may write files and run commands. Every change waits for your Allow.`
+      : `Read only: ${who} can read files but not change anything`;
     $("#row-folders").hidden = mode === "read";
     $("#set-folders-note").textContent = mode === "auto"
       ? "Besides its own workspace. Commands can reach other places too."
@@ -912,7 +924,7 @@
     sb.hidden = mode === "read";
     sb.textContent = mode === "auto" ? "Always allow" : "Asks first";
     sb.classList.toggle("warn", mode === "auto");
-    sb.title = mode === "auto" ? "Claude changes files and runs commands without asking. Click to change this in Settings." : "Claude asks before every change. Click to change this in Settings.";
+    sb.title = mode === "auto" ? `${who} changes files and runs commands without asking. Click to change this in Settings.` : `${who} asks before every change. Click to change this in Settings.`;
     const list = $("#set-folders");
     list.replaceChildren(...(s.folders || []).map((f) => h("li", {},
       h("code", { text: f, title: f }),
@@ -921,24 +933,24 @@
   }
   $("#set-access").addEventListener("change", async (e) => {
     const was = S.settings?.access || "read";
-    if (e.target.value === "ask" && was === "read" && !await confirmBox("Let Claude change files and run commands?",
-      "Claude will be able to write and edit files and run PowerShell commands. AI Brain shows you every change and every command first, and nothing happens until you click Allow. You can switch this back to Read only at any time.",
+    if (e.target.value === "ask" && was === "read" && !await confirmBox(`Let ${brainName()} change files and run commands?`,
+      `${brainName()} will be able to write and edit files and run PowerShell commands. AI Brain shows you every change and every command first, and nothing happens until you click Allow. You can switch this back to Read only at any time.`,
       { yes: "Turn on" })) { e.target.value = was; return; }
     if (e.target.value === "auto" && !await confirmAlways()) { e.target.value = was; return; }
     saveSetting({ access: e.target.value });
   });
   const confirmAlways = () => confirmBox("Always allow, without asking?",
-    "Claude will write and edit files and run PowerShell commands right away, with no Allow or Deny question. You can still see everything it does in the Activity panel, and Stop still works. Sign-in data and Discord's data stay off limits. You can switch this back in Settings at any time.",
+    `${brainName()} will write and edit files and run PowerShell commands right away, with no Allow or Deny question. You can still see everything it does in the Activity panel, and Stop still works. Sign-in data and Discord's data stay off limits. You can switch this back in Settings at any time.`,
     { yes: "Always allow" });
   $("#sb-access").addEventListener("click", () => openSettings());
   // "Always allow" in the question itself: switch the setting; the server then lets the waiting ones through.
   $("#ap-always").addEventListener("click", async () => {
     if (!await confirmAlways()) return;
-    try { applySettings(await api("/api/settings", { access: "auto" })); toast("Always allow is on. Claude will not ask again.", "ok"); }
+    try { applySettings(await api("/api/settings", { access: "auto" })); toast(`Always allow is on. ${brainName()} will not ask again.`, "ok"); }
     catch (err) { toast(err.message, "err"); }
   });
   $("#set-folder-add").addEventListener("click", async () => {
-    const f = await askInput("Folder Claude may work in (full path)", "", { max: 260, placeholder: "C:\\Users\\you\\Documents\\my-project" });
+    const f = await askInput(`Folder ${brainName()} may work in (full path)`, "", { max: 260, placeholder: "C:\\Users\\you\\Documents\\my-project" });
     if (!f) return;
     try { applySettings(await api("/api/settings", { folders: [...(S.settings.folders || []), f.replace(/^"+|"+$/g, "")] })); toast("Folder added.", "ok"); }
     catch (err) { toast(err.message, "err"); }
@@ -1835,7 +1847,7 @@
       addToThread(el, stick);
     }
     S.taskImages = [];
-    logLine(ev.stopped ? "Task stopped" : ev.isError ? "The task ended with a problem" : `Claude finished${ev.seconds != null ? ` in ${dur(ev.seconds)}` : ""}`, ev.stopped ? "warn" : ev.isError ? "error" : "good", ev.t);
+    logLine(ev.stopped ? "Task stopped" : ev.isError ? "The task ended with a problem" : `${NAME[ev.brain] || "Claude"} finished${ev.seconds != null ? ` in ${dur(ev.seconds)}` : ""}`, ev.stopped ? "warn" : ev.isError ? "error" : "good", ev.t);
     if (!S.replaying) { paintStats(); announce(ev); }
   }
   function handle(ev) {
@@ -1873,7 +1885,7 @@
       case "reply": onReply(ev); break;
       case "reply_cancel": onReplyCancel(ev); break;
       case "final": onFinal(ev); break;
-      case "log": logLine(ev.text, ev.level === "error" ? "error" : ev.level === "warn" ? "warn" : /^Claude online/.test(ev.text) ? "claude" : "", ev.t); break;
+      case "log": logLine(ev.text, ev.level === "error" ? "error" : ev.level === "warn" ? "warn" : /^Claude online/.test(ev.text) ? "claude" : /^ChatGPT online/.test(ev.text) ? "chatgpt" : "", ev.t); break;
       case "stream": setLive(ev.text); break;
       case "phase": S.phase = ev.phase; paintStage(); break;
       case "busy": setBusy(ev.value); break;

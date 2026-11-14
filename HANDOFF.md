@@ -1,4 +1,4 @@
-# AI Brain - where we left off (2026-11-14)
+# AI Brain - where we left off (2026-11-15)
 
 Version 3.1.0. Start it with the "AI Brain" desktop shortcut, or `powershell -File launch.ps1`.
 Server on http://127.0.0.1:4777, desktop window = Electron (`shell/main.cjs`).
@@ -6,6 +6,53 @@ On GitHub (private): https://github.com/edreesahmde-maker/ai-brain (branch maste
 The project lives at D:\Projects\ai-brain (moved from C:\Users\KUBE\Projects on 2026-11-14; the desktop
 shortcut and ~/.claude.json's ai-brain MCP entry point here). Programs: D:\Apps (Blender, Krita, 14 Craft
 apps, portable); PhotoCraft, FilmCraft, AniCraft, ArtCraft Studio, Canva in %LOCALAPPDATA%\Programs.
+
+## Done on 2026-11-15: ChatGPT can be the brain ("Brain: Claude / ChatGPT")
+- Setting `brain` (claude | chatgpt, default claude): Settings > The brain > Brain. With ChatGPT the helpers
+  are Claude (new tool `ask_claude`) and Gemini; `ask_both` = Claude + Gemini; there is no ask_chatgpt.
+- How it runs (`startChatGPTBrain` in app-server.mjs): `codex exec --json` (resume = state.chatgptBrainThread)
+  with `sandbox_mode="read-only"`, approval "never", and its own tools switched off with `-c features.X=false`
+  (`CODEX_BRAIN_OFF`: shell_tool, unified_exec, image_generation, plugins, apps, browser/computer use, multi
+  agent...). The user's own MCP servers in ~/.codex/config.toml are switched off for the run (`userCodexMcp`),
+  plugins/notify too (`codexLean`); config.toml is never changed. The ai-brain MCP server is given inline
+  (`-c mcp_servers.ai-brain.command/args/env`, `default_tools_approval_mode="approve"` - without it Codex refuses
+  every MCP call under approval "never"). The system prompt goes in as `developer_instructions`; effort ->
+  `model_reasoning_effort`; memory limit -> `model_auto_compact_token_limit`; attached pictures -> `-i`.
+- Verified with the real Codex 0.167.2 (2026-11-15): with shell_tool + unified_exec off it has NO way to read or
+  write files on its own (code mode's exec has no filesystem; apply_patch is refused by the read-only sandbox;
+  it could not read ~/.codex/config.toml). Do NOT switch off `code_mode_host`: then every tool, MCP too, fails.
+- Its file/command tools are AI Brain's (server.mjs, only when AI_BRAIN_BRAIN=chatgpt): read_file (text with
+  line numbers, offset/limit; pictures as images), list_folder - always; write_file, edit_file, run_command
+  (PowerShell, 10 min, output cut at 60k, AI_BRAIN_*/BRAIN_* env removed) - only while access is ask/auto.
+  Paths only inside WORK + the user's folders (AI_BRAIN_FOLDERS; links followed), `forbidden()` (moved to
+  lib.mjs) always. Each change asks through the same /api/approval/ask as Claude's approve tool (`mayRun` ->
+  `askUser`), so Allow/Deny, "allow all file changes", Always allow and the log are the same. app_python asks
+  the same way. The approve tool itself only exists for the Claude brain.
+- Claude as a helper (`askClaude` in lib.mjs): `claude -p --restricted --output-format json --tools ""
+  --strict-mcp-config` (no tools at all), model = brainModel, resume = state.claudeHelperSession.
+- Events: task/final/claude_say carry `brain: "chatgpt"`; calls have `from: "chatgpt"`. Codex gives whole
+  messages, not letters: each message shows in the live bubble when it is done. A ChatGPT final has `gptUsage`
+  (never `usage`, so Claude's totals stay Claude's); each turn is written to usage-chatgpt.jsonl as kind "brain"
+  with the plan limits, so the Usage panel's ChatGPT section counts it. Claude-helper calls are not counted.
+- app-server refactor: `beginTask`, `toolTracker(from)`, `endTask`, `afterTask` are shared by both brains.
+- Page: brain name everywhere it said Claude (approval box, access notes, stage, answer label, Activity).
+  Claude-as-helper calls have no side panel: they show in the chat (`addHelper` falls back to the thread).
+- Tests: `test/fake-codex.mjs` plays Codex and calls the REAL server.mjs over MCP (from the -c settings).
+  api-test 331 passed (35 new), ui-test 495 passed (8 new).
+- Real check done 2026-11-15 (separate port 4790, temp data, access "ask"): the real ChatGPT wrote a file after
+  Allow, asked the real Claude (ask_claude answered "4") and answered in 18 s; ~52k input tokens per turn
+  (39k cached) - Codex's own instructions and tools are large.
+
+## Found on 2026-11-15, NOT fixed yet: the Gemini helper can write files
+- `askGeminiNow` runs `agy -p --mode plan`, believed read-only. Tested for real: asked to use write_file, it
+  CREATED the file in its working folder (commands are refused in -p mode, file writes are not).
+- Tested fix: add `--settings '{"permissions":{"deny":["write_file(*)","command(*)"]}}'` -> "Permission denied
+  ... Matches user-configured deny rule". Still to check: that it also covers edits (replace_file_content etc.).
+  (`excludeTools` and `mcpServers` are NOT accepted by --settings.)
+- Gemini as the BRAIN was researched and left out: per-session MCP servers only work through `agy acp`
+  (session/new mcpServers), and there it wrote files even outside its folder without asking, in every mode
+  (default, plan), and ignored deny rules from settings. It did ask (session/request_permission) before commands.
+  -p mode respects deny rules but reads MCP servers only from the global ~/.gemini/config/mcp_config.json.
 
 ## Done on 2026-11-14 (late): Claude token use
 Measured from Claude Code's own log of the brain session (41c99b58..., kept 2 days): 272 Opus requests,
@@ -117,8 +164,8 @@ program when moving/resizing). Reviewed with Fable 5.2 as adviser; causes found 
 - `node test/inspect-test.mjs` -> 43 passed, 0 failed (real extension in a throw-away Brave profile, local test
   page, real server, the brain's tool server: pairing, share, every web_ tool, refusals, unshare, key, new code)
 - `node test/bridge-test.mjs` -> real Craft apps (all 17), Blender and Krita through their bridges (opens them)
-- `node test/api-test.mjs`    -> 290 passed, 0 failed (app control, bridges, web inspector)
-- `node test/ui-test.mjs`     -> 487 passed, 0 failed (about 6 minutes)
+- `node test/api-test.mjs`    -> 331 passed, 0 failed (app control, bridges, web inspector, ChatGPT as the brain)
+- `node test/ui-test.mjs`     -> 495 passed, 0 failed (about 6 minutes)
 - `node test/shell-test.mjs`  -> 74 passed, 0 failed (incl. background controls and GridCraft + Blender bridges through the window)
   (earlier: 62 passed (real desktop window against a test server; Google Flow
   with a local test page in an empty browser profile, incl. switching to "open only to sign in" and back;
@@ -293,8 +340,8 @@ project files (it reloads changed scenes and scripts).
 2. Discord = the installed desktop app, pinned chats in the panel (Alt+D), nothing read from Discord.
 
 ## Files
-- `lib.mjs` - settings, CLIs (Claude / Gemini / ChatGPT)
-- `server.mjs` - MCP tools the brain uses (helpers, approve, Flow)
+- `lib.mjs` - settings, CLIs (Claude / Gemini / ChatGPT), forbidden()
+- `server.mjs` - MCP tools the brain uses (helpers, approve, Flow; the ChatGPT brain's file/command tools)
 - `flow.mjs` - the brain's Google Flow control (DevTools protocol, labs.google pages only)
 - `build-stamp.cjs`, `shell/server-check.cjs` - finding and replacing an older running server
 - `app/app-server.mjs` - the web server and API

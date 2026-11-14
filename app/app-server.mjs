@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// AI Brain app server. Runs Claude (headless, subscription login) as the brain;
-// Claude calls the helper AIs through the ai-brain MCP server. Every real event is
+// AI Brain app server. Runs the brain - Claude, or ChatGPT when the user picks it (headless, subscription
+// logins) - which calls the helper AIs through the ai-brain MCP server. Every real event is
 // streamed to the dashboard over Server-Sent Events and saved per session.
 // Local only: binds 127.0.0.1 and rejects requests from other origins.
 import http from "node:http";
@@ -14,8 +14,8 @@ import {
   askChatGPT, askGemini, generateImage, listGeminiModels, loadState, updateState, runExe, readGeminiUsage, readChatGPTUsage,
   generateVideo, googleKeyState, saveGoogleKey, removeGoogleKey, listVideoModels, readVideoUsage, NO_VIDEO_KEY, VIDEO_MODELS, isVeo,
   loadSettings, saveSettings, readJson, writeJson,
-  HERE as ROOT, DATA, WORK, MEDIA, LOGS, MEDIA_RE, CODEX_JS, AGY_EXE,
-  isDiscordChat,
+  HERE as ROOT, DATA, WORK, MEDIA, LOGS, MEDIA_RE, CODEX_JS, AGY_EXE, CLAUDE_EXE,
+  isDiscordChat, forbidden, codexLean, codexLimits, recordChatGPT,
 } from "../lib.mjs";
 import { musicStatus, musicCommand, musicArt, openApp, stopMusic } from "./music.mjs";
 import buildStamp from "../build-stamp.cjs";
@@ -35,23 +35,15 @@ const PORT = Number(process.env.BRAIN_PORT || 4777);
 const HOST = "127.0.0.1";
 const BRAIN_TIMEOUT_MS = Number(process.env.BRAIN_TASK_TIMEOUT_MS || 20 * 60_000);
 const SERVER_LOG = path.join(DATA, "app.log");
-// Test hooks: a script that plays the part of Claude, and "do not open Explorer windows".
+// Test hooks: scripts that play the part of Claude and of Codex (ChatGPT as the brain), and "do not open Explorer windows".
 const FAKE_BRAIN = process.env.BRAIN_FAKE_CLAUDE || null;
+const FAKE_CODEX = process.env.BRAIN_FAKE_CODEX || null;
 const NO_OPEN = process.env.BRAIN_NO_OPEN === "1";
 for (const d of [UPLOADS, SESSIONS, CUSTOM]) fs.mkdirSync(d, { recursive: true });
 
 const slog = (...a) => { try { fs.appendFileSync(SERVER_LOG, `[${new Date().toISOString()}] ${a.join(" ")}\n`); } catch {} };
 const inside = (dir, file) => path.resolve(file).startsWith(path.resolve(dir) + path.sep);
 
-function findClaude() {
-  if (process.env.CLAUDE_EXE) return process.env.CLAUDE_EXE;
-  const c = [
-    path.join(os.homedir(), ".local", "bin", "claude.exe"),
-    path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Links", "claude.exe"),
-  ];
-  return c.find((p) => fs.existsSync(p)) || "claude";
-}
-const CLAUDE_EXE = findClaude();
 
 // MCP config handed to the brain: only our ai-brain server (nothing else the user has installed).
 const MCP_CFG = path.join(DATA, "brain-mcp.json");
@@ -62,12 +54,13 @@ const MCP_CFG = path.join(DATA, "brain-mcp.json");
 // are on). It ends with the task.
 let ctlKey = null, ctlTask = "";
 function writeMcpConfig(s = loadSettings(), key = null) {
-  const env = { AI_BRAIN_CHATGPT: s.chatgptEnabled ? "1" : "0", BRAIN_DATA_DIR: DATA, AI_BRAIN_FLOW: s.flowBrain ? "1" : "0", AI_BRAIN_APPS: s.appsBrain && ctlKey ? "1" : "0",
+  const env = { AI_BRAIN_BRAIN: s.brain, AI_BRAIN_FOLDERS: JSON.stringify(usableFolders(s)), AI_BRAIN_CHATGPT: s.chatgptEnabled ? "1" : "0", BRAIN_DATA_DIR: DATA, AI_BRAIN_FLOW: s.flowBrain ? "1" : "0", AI_BRAIN_APPS: s.appsBrain && ctlKey ? "1" : "0",
     AI_BRAIN_INSPECT: s.inspectBrain && ctlKey ? "1" : "0", AI_BRAIN_APP_URL: `http://${HOST}:${PORT}` };
   for (const k of ["BRAIN_FLOW_PORT", "BRAIN_FLOW_ORIGIN"]) if (process.env[k]) env[k] = process.env[k];
   if (key) Object.assign(env, { AI_BRAIN_APPROVE_URL: `http://${HOST}:${PORT}/api/approval/ask`, AI_BRAIN_APPROVE_KEY: key });
   if ((s.appsBrain || s.inspectBrain) && ctlKey) env.AI_BRAIN_CONTROL_KEY = ctlKey;
   writeJson(MCP_CFG, { mcpServers: { "ai-brain": { command: process.execPath, args: [path.join(ROOT, "server.mjs")], env } } });
+  return env;
 }
 
 // ---------- folders the brain may work in (access "ask") ----------
@@ -87,7 +80,7 @@ function folderProblem(f) {
   return "";
 }
 const usableFolders = (s) => [...new Set(s.folders.map((f) => path.resolve(f)))].filter((f) => !folderProblem(f));
-const HELPER_TOOLS = new Set(["ask_gemini", "ask_chatgpt", "ask_both", "generate_image", "generate_video", "flow_make_video", "flow_save_videos"]);
+const HELPER_TOOLS = new Set(["ask_gemini", "ask_chatgpt", "ask_claude", "ask_both", "generate_image", "generate_video", "flow_make_video", "flow_save_videos"]);
 const FLOW_TOOLS = ["flow_make_video", "flow_look", "flow_click", "flow_type", "flow_wait", "flow_save_videos"];
 // app_python is left out on purpose: running Python inside Blender or Krita can do anything a program
 // can, so it goes through the approve tool like a command (asks in "ask", runs in "auto", refused in "read").
@@ -100,9 +93,12 @@ const brainTools = (s) =>
     ...(s.inspectBrain ? WEB_TOOLS : [])].map((t) => `mcp__ai-brain__${t}`);
 const videoName = (id) => VIDEO_MODELS.find((m) => m.id === id)?.label.replace(/ \(.*/, "") || String(id).replace(/^models\//, "");
 
+const brainName = (s = loadSettings()) => (s.brain === "chatgpt" ? "ChatGPT" : "Claude");
 function systemPrompt(s) {
+  const gpt = s.brain === "chatgpt";
   const lines = ['You are the BRAIN of the "AI Brain" desktop app. The user types tasks into the app; you coordinate helper AIs:'];
-  if (s.chatgptEnabled) lines.push("- ChatGPT (tool ask_chatgpt) - the user's ChatGPT subscription.");
+  if (gpt) lines.push("- Claude (tool ask_claude) - the user's Claude subscription. Strong at careful reasoning, writing and reviewing code. It has no tools: put everything it needs in the message.");
+  else if (s.chatgptEnabled) lines.push("- ChatGPT (tool ask_chatgpt) - the user's ChatGPT subscription.");
   lines.push("- Gemini (tool ask_gemini) - the user's Google subscription. Gemini can GENERATE IMAGES (tool generate_image, or ask it). Gemini itself cannot make video or audio.");
   if (googleKeyState().connected) lines.push(`- VIDEO (tool generate_video) - Google ${videoName(s.videoModel)} makes one short clip (about 8 seconds, with sound) from a description. It costs the user money for every clip and takes a few minutes. Use it only when the user asks for a video, and make exactly as many clips as they asked for (one unless they say otherwise). Write a rich prompt: subject, action, camera movement, style, lighting, sounds. Never retry a failed video more than once.`);
   else if (!s.flowBrain) lines.push("- Video is not connected: if the user asks for a video, tell them to add their Google API key in Settings > Video (or to open Google Flow from the Apps panel).");
@@ -122,7 +118,7 @@ function systemPrompt(s) {
     "  Start with web_tabs. Each tool works on one shared tab (the last one shared, unless you give tab). web_html reads the live page code (or one part, by CSS selector); web_eval runs JavaScript in the page and returns the result; web_network lists the requests the page made since it was shared (reload with web_go to see a page load from the start), web_response shows one of them in full; web_console shows console messages and errors; web_cookies, web_styles and web_screenshot do what they say.",
     "  Rules: these tabs are the user's real accounts. Only inspect for what the user asked. Read, but do not change anything (no web_eval that clicks, submits, buys, posts, sends, deletes or changes settings) unless the user asked for exactly that. Never put passwords, cookie values, tokens or personal data in your answer unless the user asked for that exact item. If a tab is not shared, ask the user to open it and click the AI Brain extension button there.",
   ].join("\n"));
-  if (s.chatgptEnabled) {
+  if (gpt || s.chatgptEnabled) {
     lines.push("How to work: decide what each helper is best at, delegate sub-tasks (in parallel with ask_both when useful), compare and combine their answers, check their work, and give the user one clear final answer.");
     lines.push("If a helper fails (for example it is not signed in), carry on with the other one and tell the user briefly.");
   } else {
@@ -131,14 +127,18 @@ function systemPrompt(s) {
   }
   lines.push("For image requests, write a strong detailed image prompt and use generate_image. You may also answer directly when a helper is not needed.");
   lines.push("You run non-interactively: do not ask follow-up questions unless truly necessary. Your answer is shown to the user as Markdown; keep it well formatted and reasonably concise. When files were created, list their full paths (the app shows those images automatically).");
-  lines.push("You can use the Read tool to look at files the user attached (their paths are given in the task).");
+  if (gpt) {
+    lines.push("In this app your own shell, file and patch tools are switched off. Use AI Brain's tools instead: read_file and list_folder to look at files (such as files the user attached; their paths are given in the task), and, when allowed, write_file, edit_file and run_command.");
+  } else lines.push("You can use the Read tool to look at files the user attached (their paths are given in the task).");
   if (s.access === "ask" || s.access === "auto") {
     const folders = usableFolders(s);
-    if (s.access === "ask") lines.push(`You MAY create and edit files (Write, Edit) and run PowerShell commands. Every change and every command first waits for the user to click Allow in the app, so work in a few clear steps and say briefly what each step is for. If the user denies a step, do not try the same thing another way; tell them what you wanted to do and why.`);
-    else lines.push(`You MAY create and edit files (Write, Edit) and run PowerShell commands. The user switched on "Always allow", so nothing waits for a click: every change and command runs right away. That is trust, so be careful: work in a few clear steps, say briefly what each step does, never delete or overwrite anything the task did not ask for, and when a step could lose the user's work, make a copy first. If a step is refused, do not try the same thing another way; tell the user what you wanted to do and why.`);
-    lines.push(`Your working folder is ${WORK}.${folders.length ? ` The user also gave you these folders: ${folders.join("; ")}.` : ""} The Write and Edit tools only work inside those folders; anywhere else you need a PowerShell command (which also needs the user's OK).`);
+    const how = gpt ? "(write_file, edit_file) and run PowerShell commands (run_command)" : "(Write, Edit) and run PowerShell commands";
+    if (s.access === "ask") lines.push(`You MAY create and edit files ${how}. Every change and every command first waits for the user to click Allow in the app, so work in a few clear steps and say briefly what each step is for. If the user denies a step, do not try the same thing another way; tell them what you wanted to do and why.`);
+    else lines.push(`You MAY create and edit files ${how}. The user switched on "Always allow", so nothing waits for a click: every change and command runs right away. That is trust, so be careful: work in a few clear steps, say briefly what each step does, never delete or overwrite anything the task did not ask for, and when a step could lose the user's work, make a copy first. If a step is refused, do not try the same thing another way; tell the user what you wanted to do and why.`);
+    lines.push(`Your working folder is ${WORK}.${folders.length ? ` The user also gave you these folders: ${folders.join("; ")}.` : ""} ${gpt ? "read_file, list_folder, write_file and edit_file" : "The Write and Edit tools"} only work inside those folders; anywhere else you need ${gpt ? "run_command" : "a PowerShell command"} (which also needs the user's OK).`);
     lines.push("Never read or change Discord's data, the .claude, .codex or .gemini folders, or AI Brain's brain-mcp.json, google-key.json and inspect-key.json. Those requests are always refused.");
   } else {
+    if (gpt) lines.push(`You can read files inside your working folder (${WORK}) with read_file and list_folder.`);
     lines.push("You can NOT change files or run commands in this app right now. If a task needs that, say so and tell the user they can switch it on in Settings > The brain > File and command access (the app then asks them before every change).");
   }
   if (s.answerStyle === "short") lines.push("The user prefers SHORT answers: get to the point in a few sentences or a short list, unless they ask for more.");
@@ -171,7 +171,7 @@ function emit(ev) {
 }
 
 // ---------- sessions ----------
-const ID_KEYS = ["claudeSession", "geminiConversation", "chatgptThread"];
+const ID_KEYS = ["claudeSession", "geminiConversation", "chatgptThread", "chatgptBrainThread", "claudeHelperSession"];
 const ID_RE = /^[a-z0-9]{8,24}$/;
 const index = new Map(); // id -> meta
 let session = null;      // the active session: { id, title, createdAt, updatedAt, pinned, ids, events }
@@ -270,6 +270,7 @@ function lifetimeStats() {
     for (const ev of s.events) {
       if (ev.type === "task") {
         out.tasks++; bump(perDay, dayKey(ev.t));
+        if (ev.brain === "chatgpt") continue; // ChatGPT's own use is counted in the ChatGPT section
         out.claude.all.tasks++;
         if (dayKey(ev.t) === today) out.claude.today.tasks++;
         if (s === session) out.claude.session.tasks++;
@@ -419,22 +420,15 @@ let allowFilesThisRun = false;  // "Allow all file changes for this task" was cl
 const approvals = new Map();    // id -> { id, tool, kind, title, path, detail, note, t, done }
 const FILE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
 const SHELL_TOOLS = new Set(["PowerShell", "Bash"]);
-// Never allowed, whatever the user clicks: sign-in data and the approval key itself.
-function forbidden(input) {
-  const all = [];
-  const walk = (v) => { if (typeof v === "string") all.push(v); else if (v && typeof v === "object") Object.values(v).forEach(walk); };
-  walk(input);
-  const t = all.join("\n").toLowerCase().replace(/\\+/g, "/");
-  if (t.includes("discord") && /appdata|leveldb|local storage|token/.test(t)) return true;
-  return /[/~]\.(claude|codex|gemini)\b|brain-mcp\.json|google-key|inspect-key|gemini_api_key|google_api_key/.test(t);
-}
+// Never allowed, whatever the user clicks: sign-in data and the approval key itself (forbidden() is in lib.mjs).
 function describe(tool, input = {}) {
+  const who = brainName();
   const clip = (v, n) => { const s = String(v ?? ""); return s.length > n ? `${s.slice(0, n)}\n… (${s.length - n} more characters)` : s; };
-  if (SHELL_TOOLS.has(tool)) return { kind: "command", title: "Claude wants to run a command", path: "", detail: clip(input.command, 20_000), note: String(input.description || "").slice(0, 300) };
-  if (/(^|__)app_python$/.test(tool)) return { kind: "command", title: "Claude wants to run Python in the program in the middle", path: "", detail: clip(input.code, 20_000), note: "It runs inside the program (Blender or Krita) and can do anything that program can, including saving and deleting files." };
-  if (tool === "Write") return { kind: "file", title: "Claude wants to write a file", path: String(input.file_path || ""), detail: clip(input.content, 20_000), note: "The whole file will be replaced with this text." };
-  if (tool === "Edit") return { kind: "file", title: "Claude wants to change a file", path: String(input.file_path || ""), detail: `REPLACE:\n${clip(input.old_string, 10_000)}\n\nWITH:\n${clip(input.new_string, 10_000)}`, note: input.replace_all ? "Every match in the file will be replaced." : "" };
-  return { kind: "other", title: `Claude wants to use ${tool}`, path: String(input.file_path || input.notebook_path || input.path || ""), detail: clip(JSON.stringify(input, null, 2), 20_000), note: "" };
+  if (SHELL_TOOLS.has(tool)) return { kind: "command", title: `${who} wants to run a command`, path: "", detail: clip(input.command, 20_000), note: String(input.description || "").slice(0, 300) };
+  if (/(^|__)app_python$/.test(tool)) return { kind: "command", title: `${who} wants to run Python in the program in the middle`, path: "", detail: clip(input.code, 20_000), note: "It runs inside the program (Blender or Krita) and can do anything that program can, including saving and deleting files." };
+  if (tool === "Write") return { kind: "file", title: `${who} wants to write a file`, path: String(input.file_path || ""), detail: clip(input.content, 20_000), note: "The whole file will be replaced with this text." };
+  if (tool === "Edit") return { kind: "file", title: `${who} wants to change a file`, path: String(input.file_path || ""), detail: `REPLACE:\n${clip(input.old_string, 10_000)}\n\nWITH:\n${clip(input.new_string, 10_000)}`, note: input.replace_all ? "Every match in the file will be replaced." : "" };
+  return { kind: "other", title: `${who} wants to use ${tool}`, path: String(input.file_path || input.notebook_path || input.path || ""), detail: clip(JSON.stringify(input, null, 2), 20_000), note: "" };
 }
 const approvalView = (a) => ({ id: a.id, tool: a.tool, kind: a.kind, title: a.title, path: a.path, detail: a.detail, note: a.note, cwd: WORK, canAll: a.kind === "file", t: a.t });
 const oneLine = (a) => `${a.tool}${a.path ? ` ${a.path}` : a.kind === "command" ? `: ${a.detail.replace(/\s+/g, " ").slice(0, 140)}` : ""}`;
@@ -621,16 +615,14 @@ function windowsChanged() {
   if (!clients.size && approvals.size) noWindowTimer = setTimeout(() => { if (!clients.size) denyAllApprovals("the AI Brain window was closed"); }, 15_000);
 }
 
-function startBrain(text, files = [], isRetry = false, mode = "auto") {
-  if (brain) throw new Error("The brain is already working on a task.");
+// ---------- running the brain ----------
+// What every task does first, whichever AI is the brain: the task text, fresh one-task keys and the
+// MCP config. Returns the prompt and whether file and command access is on.
+function beginTask(text, files, isRetry, mode, s) {
   stoppedByUser = false;
-  const state = loadState();
-  const s = loadSettings();
-  const resumed = !!state.claudeSession;
   let prompt = text;
   if (files.length) prompt += `\n\nAttached files:\n${files.join("\n")}`;
   if (mode !== "auto") prompt += `\n\n[${MODES[mode]}]`;
-
   // The program in the middle: a new key (and a new task id, so the window starts fresh) for this task only.
   endControls("a new task started");
   endInspects("a new task started");
@@ -640,7 +632,97 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
   const ask = s.access === "ask" || s.access === "auto";
   runKey = ask ? crypto.randomBytes(24).toString("hex") : null;
   allowFilesThisRun = false;
-  writeMcpConfig(s, runKey);
+  const mcpEnv = writeMcpConfig(s, runKey);
+  if (!isRetry) {
+    setTitleFrom(text);
+    emit({ type: "task", text, mode, brain: s.brain, files: files.map((f) => ({ path: f, name: path.basename(f), url: mediaFrom(f)[0] || null })) });
+    send({ type: "busy", value: true });
+  }
+  return { prompt, ask, mcpEnv };
+}
+// The brain's calls to its tools: helpers get a call/reply pair in the window, other tools a log line.
+function toolTracker(from) {
+  const calls = new Map(); // tool call id -> { to, video, pair }
+  const start = (id, name, input = {}) => {
+    live = ""; pushStream(true);
+    const tool = String(name).replace("mcp__ai-brain__", "");
+    if (tool === "Read" || tool === "read_file") { emit({ type: "log", level: "info", text: `Reading file ${input.file_path || input.path || ""}` }); return; }
+    if (tool === "list_folder") { emit({ type: "log", level: "info", text: `Looking in folder ${input.path || WORK}` }); return; }
+    if (tool.startsWith("app_")) { emit({ type: "log", level: "info", text: `Program: ${controlLine(tool, input)}` }); return; }
+    if (tool.startsWith("web_")) {
+      const what = input.url || input.selector || input.expression || input.filter || (input.request ? `#${input.request}` : "");
+      emit({ type: "log", level: "info", text: `Web inspector: ${tool.slice(4)}${what ? ` ${String(what).replace(/\s+/g, " ").slice(0, 100)}` : ""}` });
+      return;
+    }
+    if (!HELPER_TOOLS.has(tool)) { // its own tools (files, search, commands): a line in the log
+      const what = input.command || input.file_path || input.path || input.pattern || "";
+      emit({ type: "log", level: "info", text: `${tool}${what ? `: ${String(what).replace(/\s+/g, " ").slice(0, 160)}` : ""}` });
+      return;
+    }
+    const p = input.prompt || input.description || "";
+    setPhase("helpers");
+    if (tool === "ask_both") {
+      const pair = [from === "chatgpt" ? "claude" : "chatgpt", "gemini"];
+      calls.set(id, { to: "both", pair });
+      emit({ type: "call", id: id + ":c", from, to: pair[0], prompt: p });
+      emit({ type: "call", id: id + ":g", from, to: "gemini", prompt: p });
+    } else {
+      const to = tool === "ask_chatgpt" ? "chatgpt" : tool === "ask_claude" ? "claude" : "gemini";
+      const video = tool === "generate_video" || tool.startsWith("flow_");
+      calls.set(id, { to, video });
+      emit({ type: "call", id, from, to, video, prompt: tool === "generate_image" ? `Generate image: ${p}` : tool === "flow_save_videos" ? "Save the new video from Google Flow" : tool === "flow_make_video" ? `Google Flow video: ${p}` : video ? `Generate video: ${p}` : p });
+    }
+  };
+  const done = (id, txt, isError) => {
+    const call = calls.get(id);
+    if (!call) return;
+    calls.delete(id);
+    if (call.to === "both") {
+      const g = txt.indexOf("=== Gemini ===");
+      const ct = txt.slice(0, g < 0 ? undefined : g).replace(/^\s*=== \w+ ===/, "").trim();
+      const gt = g < 0 ? "" : txt.slice(g + 14).trim();
+      const ce = ct.startsWith("ERROR:"), ge = gt.startsWith("ERROR:");
+      emit({ type: "reply", id: id + ":c", to: call.pair[0], text: ct, isError: ce, images: mediaFrom(ct) });
+      emit({ type: "reply", id: id + ":g", to: "gemini", text: gt, isError: ge, images: mediaFrom(gt) });
+      noteResult(call.pair[0], !ce); noteResult("gemini", !ge);
+    } else {
+      const images = mediaFrom(txt);
+      emit({ type: "reply", id, to: call.to, text: txt, isError, images, video: !!call.video });
+      if (!call.video) noteResult(call.to, !isError); // a video problem says nothing about Gemini itself
+      if (images.length) send({ type: "media" });
+    }
+    if (!calls.size) setPhase("thinking");
+  };
+  return { calls, start, done };
+}
+// What every task does when the brain's process ends.
+function endTask(calls) {
+  brain = null;
+  ctlKey = null;
+  endControls("the task ended");
+  endInspects("the task ended");
+  runKey = null; allowFilesThisRun = false;
+  denyAllApprovals("the task ended");
+  live = ""; pushStream(true);
+  for (const [id, call] of calls) { // close any calls that never got an answer
+    const ids = call.to === "both" ? [[id + ":c", call.pair[0]], [id + ":g", "gemini"]] : [[id, call.to]];
+    for (const [i2, to] of ids) emit({ type: "reply_cancel", id: i2, to });
+  }
+}
+function afterTask() {
+  setPhase("idle");
+  send({ type: "busy", value: false });
+  flushSession();
+  setImmediate(nextFromQueue);
+}
+
+function startBrain(text, files = [], isRetry = false, mode = "auto") {
+  if (brain) throw new Error("The brain is already working on a task.");
+  const s = loadSettings();
+  if (s.brain === "chatgpt") return startChatGPTBrain(text, files, isRetry, mode, s);
+  const state = loadState();
+  const resumed = !!state.claudeSession;
+  const { prompt, ask } = beginTask(text, files, isRetry, mode, s);
   const args = [
     // --restricted: file tools only work inside ./workspace (and the folders from --add-dir), command
     // tools only exist when --tools names them, and the user's own settings files are ignored.
@@ -658,12 +740,6 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
   if (s.brainModel !== "auto") args.push("--model", s.brainModel);
   if (s.effort !== "auto") args.push("--effort", s.effort);
   if (resumed) args.push("--resume", state.claudeSession);
-
-  if (!isRetry) {
-    setTitleFrom(text);
-    emit({ type: "task", text, mode, files: files.map((f) => ({ path: f, name: path.basename(f), url: mediaFrom(f)[0] || null })) });
-    send({ type: "busy", value: true });
-  }
   emit({ type: "log", level: "info", text: resumed ? "Continuing the conversation with Claude..." : "Starting a new Claude session..." });
 
   const env = { ...process.env, MCP_TOOL_TIMEOUT: "900000", NO_COLOR: "1" };
@@ -680,7 +756,7 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
   brain = child;
   live = ""; setPhase("starting");
   const started = Date.now();
-  const calls = new Map(); // tool_use_id -> { to }
+  const tools = toolTracker("claude");
   let gotResult = false, gotInit = false, buf = "", errTail = "", pendingSay = null;
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
@@ -719,59 +795,13 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
     } else if (ev.type === "assistant") {
       for (const c of ev.message?.content || []) {
         if (c.type === "text" && c.text.trim()) { flushSay(); pendingSay = c.text; }
-        else if (c.type === "tool_use") {
-          flushSay();
-          live = ""; pushStream(true);
-          const tool = String(c.name).replace("mcp__ai-brain__", "");
-          if (tool === "Read") { emit({ type: "log", level: "info", text: `Reading file ${c.input?.file_path || ""}` }); continue; }
-          if (tool.startsWith("app_")) { emit({ type: "log", level: "info", text: `Program: ${controlLine(tool, c.input || {})}` }); continue; }
-          if (tool.startsWith("web_")) {
-            const a = c.input || {}, what = a.url || a.selector || a.expression || a.filter || (a.request ? `#${a.request}` : "");
-            emit({ type: "log", level: "info", text: `Web inspector: ${tool.slice(4)}${what ? ` ${String(what).replace(/\s+/g, " ").slice(0, 100)}` : ""}` });
-            continue;
-          }
-          if (!HELPER_TOOLS.has(tool)) { // its own tools (files, search, commands): a line in the log
-            const what = c.input?.command || c.input?.file_path || c.input?.pattern || "";
-            emit({ type: "log", level: "info", text: `${tool}${what ? `: ${String(what).replace(/\s+/g, " ").slice(0, 160)}` : ""}` });
-            continue;
-          }
-          const p = c.input?.prompt || c.input?.description || "";
-          setPhase("helpers");
-          if (tool === "ask_both") {
-            calls.set(c.id, { to: "both" });
-            emit({ type: "call", id: c.id + ":c", from: "claude", to: "chatgpt", prompt: p });
-            emit({ type: "call", id: c.id + ":g", from: "claude", to: "gemini", prompt: p });
-          } else {
-            const to = tool === "ask_chatgpt" ? "chatgpt" : "gemini";
-            const video = tool === "generate_video" || tool.startsWith("flow_");
-            calls.set(c.id, { to, video });
-            emit({ type: "call", id: c.id, from: "claude", to, video, prompt: tool === "generate_image" ? `Generate image: ${p}` : tool === "flow_save_videos" ? "Save the new video from Google Flow" : tool === "flow_make_video" ? `Google Flow video: ${p}` : video ? `Generate video: ${p}` : p });
-          }
-        }
+        else if (c.type === "tool_use") { flushSay(); tools.start(c.id, c.name, c.input || {}); }
       }
     } else if (ev.type === "user") {
       for (const c of ev.message?.content || []) {
         if (c.type !== "tool_result") continue;
-        const call = calls.get(c.tool_use_id);
-        if (!call) continue;
-        calls.delete(c.tool_use_id);
         const txt = Array.isArray(c.content) ? c.content.map((x) => x.text || "").join("\n") : String(c.content || "");
-        const isError = !!c.is_error;
-        if (call.to === "both") {
-          const g = txt.indexOf("=== Gemini ===");
-          const ct = txt.slice(0, g < 0 ? undefined : g).replace("=== ChatGPT ===", "").trim();
-          const gt = g < 0 ? "" : txt.slice(g + 14).trim();
-          const ce = ct.startsWith("ERROR:"), ge = gt.startsWith("ERROR:");
-          emit({ type: "reply", id: c.tool_use_id + ":c", to: "chatgpt", text: ct, isError: ce, images: mediaFrom(ct) });
-          emit({ type: "reply", id: c.tool_use_id + ":g", to: "gemini", text: gt, isError: ge, images: mediaFrom(gt) });
-          noteResult("chatgpt", !ce); noteResult("gemini", !ge);
-        } else {
-          const images = mediaFrom(txt);
-          emit({ type: "reply", id: c.tool_use_id, to: call.to, text: txt, isError, images, video: !!call.video });
-          if (!call.video) noteResult(call.to, !isError); // a video problem says nothing about Gemini itself
-          if (images.length) send({ type: "media" });
-        }
-        if (!calls.size) setPhase("thinking");
+        tools.done(c.tool_use_id, txt, !!c.is_error);
       }
     } else if (ev.type === "rate_limit_event") {
       const w = ev.rate_limit_info?.unifiedWindows || {};
@@ -815,17 +845,7 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
   child.on("close", (code) => {
     clearTimeout(timer);
     if (buf.trim()) handle(buf.trim());
-    brain = null;
-    ctlKey = null;
-    endControls("the task ended");
-    endInspects("the task ended");
-    runKey = null; allowFilesThisRun = false;
-    denyAllApprovals("the task ended");
-    live = ""; pushStream(true);
-    for (const [id, call] of calls) { // close any calls that never got an answer
-      const ids = call.to === "both" ? [[id + ":c", "chatgpt"], [id + ":g", "gemini"]] : [[id, call.to]];
-      for (const [i2, to] of ids) emit({ type: "reply_cancel", id: i2, to });
-    }
+    endTask(tools.calls);
     if (!gotResult && resumed && !gotInit && !stoppedByUser && !isRetry) {
       // The saved Claude session could not be resumed - start a fresh one once.
       slog("resume failed, retrying fresh", errTail);
@@ -843,10 +863,159 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
       });
       if (!stoppedByUser) slog("brain exit", code, errTail);
     }
-    setPhase("idle");
-    send({ type: "busy", value: false });
-    flushSession();
-    setImmediate(nextFromQueue);
+    afterTask();
+  });
+  child.stdin.end(prompt);
+}
+
+// ---------- ChatGPT as the brain (Settings > The brain > Brain) ----------
+// Codex runs read-only with its own shell switched off: it cannot read, change or run anything on
+// its own. Everything goes through the ai-brain tools (read_file, list_folder, write_file, edit_file,
+// run_command and the rest), where the same folder rules and approvals apply as for Claude.
+// Codex features switched off for the brain (only AI Brain's tools stay; web search stays on).
+const CODEX_BRAIN_OFF = ["shell_tool", "unified_exec", "multi_agent", "multi_agent_v2", "image_generation", "apps", "plugins",
+  "browser_use", "browser_use_external", "computer_use", "goals", "hooks", "skill_search", "tool_suggest", "sleep_tool", "memories"];
+const tomlStr = (v) => JSON.stringify(String(v)); // a JSON string is also a valid TOML string
+/** The user's own MCP servers in ~/.codex/config.toml: switched off for the brain's runs (the file is not changed). */
+function userCodexMcp(home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex")) {
+  let toml = "";
+  try { toml = fs.readFileSync(path.join(home, "config.toml"), "utf8"); } catch { return []; }
+  return [...new Set([...toml.matchAll(/^\s*\[mcp_servers\.("[^"\r\n]+"|[\w-]+)\]\s*$/gm)].map((m) => m[1]))].filter((n) => n !== "ai-brain" && n !== '"ai-brain"');
+}
+function codexBrainArgs(s, mcpEnv, resumeId, images) {
+  const a = ["exec"];
+  if (resumeId) a.push("resume");
+  a.push("--json", "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"', ...codexLean());
+  for (const f of CODEX_BRAIN_OFF) a.push("-c", `features.${f}=false`);
+  for (const n of userCodexMcp()) a.push("-c", `mcp_servers.${n}.enabled=false`);
+  const env = Object.entries(mcpEnv).map(([k, v]) => `${k}=${tomlStr(v)}`).join(", ");
+  a.push(
+    "-c", `mcp_servers.ai-brain.command=${tomlStr(process.execPath)}`,
+    "-c", `mcp_servers.ai-brain.args=[${tomlStr(path.join(ROOT, "server.mjs"))}]`,
+    "-c", `mcp_servers.ai-brain.env={${env}}`,
+    "-c", "mcp_servers.ai-brain.startup_timeout_sec=60",
+    "-c", "mcp_servers.ai-brain.tool_timeout_sec=900",
+    // The ai-brain tools ask the user themselves where it matters (files, commands, Python), so Codex
+    // must not stop them: with approval "never" it would refuse every one.
+    "-c", 'mcp_servers.ai-brain.default_tools_approval_mode="approve"',
+    "-c", `developer_instructions=${tomlStr(systemPrompt(s))}`,
+  );
+  if (s.effort !== "auto") a.push("-c", `model_reasoning_effort="${s.effort}"`);
+  if (s.memoryLimit) a.push("-c", `model_auto_compact_token_limit=${s.memoryLimit * 1000}`);
+  for (const img of images) a.push("-i", img);
+  if (resumeId) a.push(resumeId);
+  a.push("-");
+  return a;
+}
+const IMAGE_FILE = /\.(png|jpe?g|webp|gif)$/i;
+function startChatGPTBrain(text, files, isRetry, mode, s) {
+  const state = loadState();
+  const resumeId = state.chatgptBrainThread || null;
+  const { prompt, mcpEnv } = beginTask(text, files, isRetry, mode, s);
+  const args = codexBrainArgs(s, mcpEnv, resumeId, files.filter((f) => IMAGE_FILE.test(f) && fs.existsSync(f)));
+  emit({ type: "log", level: "info", text: resumeId ? "Continuing the conversation with ChatGPT..." : "Starting a new ChatGPT conversation..." });
+  const env = { ...process.env, NO_COLOR: "1" };
+  const started = Date.now();
+  let child;
+  if (FAKE_CODEX) child = spawn(process.execPath, [FAKE_CODEX, ...args], { cwd: WORK, windowsHide: true, env });
+  else if (fs.existsSync(CODEX_JS)) child = spawn(process.execPath, [CODEX_JS, ...args], { cwd: WORK, windowsHide: true, env });
+  else {
+    endTask(new Map());
+    emit({ type: "final", brain: "chatgpt", isError: true, images: [], seconds: 0,
+      text: "ChatGPT cannot be the brain: the Codex CLI is not installed. Install it (npm install -g @openai/codex), or pick Claude in Settings > The brain." });
+    afterTask();
+    return;
+  }
+  brain = child;
+  live = ""; setPhase("starting");
+  const tag = crypto.randomBytes(4).toString("hex"); // Codex numbers its items from 1 in every run
+  const tools = toolTracker("chatgpt");
+  let gotResult = false, gotInit = false, buf = "", errTail = "", pendingSay = null, threadId = resumeId;
+  const errors = [];
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  const timer = setTimeout(() => {
+    emit({ type: "log", level: "error", text: `Task took longer than ${BRAIN_TIMEOUT_MS / 60000} minutes, stopping it.` });
+    killTree(child);
+  }, BRAIN_TIMEOUT_MS);
+  const flushSay = () => { if (pendingSay) { emit({ type: "claude_say", brain: "chatgpt", text: pendingSay }); pendingSay = null; } };
+  const ours = (it) => it?.type === "mcp_tool_call" && it.server === "ai-brain";
+  const seen = new Set(); // tool calls already shown (a call starts and completes as two items)
+  const handle = (line) => {
+    let ev;
+    try { ev = JSON.parse(line); } catch { return; }
+    const it = ev.item || {};
+    if (ev.type === "thread.started") {
+      gotInit = true;
+      threadId = ev.thread_id || threadId;
+      if (threadId) updateState({ chatgptBrainThread: threadId });
+      emit({ type: "log", level: "info", text: "ChatGPT online (Codex)" });
+      setPhase("thinking");
+    } else if (ev.type === "item.started") {
+      if (ours(it)) { flushSay(); seen.add(`${tag}-${it.id}`); tools.start(`${tag}-${it.id}`, it.tool, it.arguments || {}); }
+      else if (it.type === "reasoning") setPhase("thinking");
+    } else if (ev.type === "item.completed") {
+      if (it.type === "agent_message" && String(it.text || "").trim()) {
+        flushSay();
+        pendingSay = it.text;
+        live = it.text; setPhase("writing"); pushStream(true);
+      } else if (ours(it)) {
+        const id = `${tag}-${it.id}`;
+        if (!seen.has(id)) { seen.add(id); tools.start(id, it.tool, it.arguments || {}); }
+        const txt = (it.result?.content || []).map((x) => x.text || "").join("\n") || it.error?.message || "";
+        tools.done(id, txt, !!it.error || it.status === "failed" || !!it.result?.isError);
+      } else if (it.type === "web_search" && it.query) emit({ type: "log", level: "info", text: `Web search: ${String(it.query).slice(0, 160)}` });
+      else if (it.type === "error" && it.message) slog("codex brain note", it.message);
+    } else if (ev.type === "turn.completed") {
+      gotResult = true;
+      const u = ev.usage || {}, n = (v) => Number(v) || 0;
+      const usage = { in: n(u.input_tokens), cached: n(u.cached_input_tokens), out: n(u.output_tokens) };
+      const finalText = pendingSay || "(ChatGPT gave no answer.)";
+      pendingSay = null;
+      emit({ type: "final", brain: "chatgpt", text: finalText, isError: false, images: mediaFrom(finalText), seconds: Math.round((Date.now() - started) / 1000), gptUsage: usage });
+      noteResult("chatgpt", true);
+      const limits = FAKE_CODEX ? (process.env.BRAIN_FAKE_CODEX_HOME ? codexLimits("test-thread", process.env.BRAIN_FAKE_CODEX_HOME) : null) : codexLimits(threadId);
+      recordChatGPT({ kind: "brain", ok: true, ms: Date.now() - started, ...usage, ...(limits ? { limits } : {}) });
+    } else if (ev.type === "turn.failed") errors.push(ev.error?.message || "The turn failed.");
+    else if (ev.type === "error" && ev.message) errors.push(ev.message);
+  };
+  child.stdout.on("data", (d) => {
+    buf += d;
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (line) handle(line);
+    }
+  });
+  child.stderr.on("data", (d) => { errTail = (errTail + d).slice(-4000); });
+  child.stdin.on("error", () => { /* Codex exited before reading the task */ });
+  child.on("error", (e) => { errTail += String(e); });
+  child.on("close", (code) => {
+    clearTimeout(timer);
+    if (buf.trim()) handle(buf.trim());
+    endTask(tools.calls);
+    if (!gotResult && resumeId && !gotInit && !stoppedByUser && !isRetry) {
+      // The saved ChatGPT conversation could not be continued - start a fresh one once.
+      slog("chatgpt brain resume failed, retrying fresh", errors.join(" | "), errTail);
+      updateState({ chatgptBrainThread: null });
+      emit({ type: "log", level: "warn", text: "Could not continue the previous ChatGPT conversation - starting a fresh one." });
+      try { startBrain(text, files, true, mode); return; } catch { /* fall through */ }
+    }
+    if (!gotResult) {
+      flushSay();
+      // Codex logs harmless lines (e.g. "failed to refresh available models") to stderr: leave them out.
+      const tail = errTail.split(/\r?\n/).filter((l) => l.trim() && !/^\S+Z\s+(ERROR|WARN|INFO)\s+codex_/.test(l)).slice(-5).join("\n");
+      let why = [...errors.slice(-3), tail].filter(Boolean).join("\n") || `exit code ${code}`;
+      if (/log ?in|auth|401|unauthori/i.test(why)) why = `ChatGPT is not signed in. Sign in with "codex login" (or press Sign in in Settings).\n${why}`;
+      emit({
+        type: "final", brain: "chatgpt", stopped: stoppedByUser, isError: !stoppedByUser, images: [],
+        text: stoppedByUser ? "Stopped." : `The task stopped before ChatGPT finished.\n${why}`,
+        seconds: Math.round((Date.now() - started) / 1000),
+      });
+      if (!stoppedByUser) { slog("chatgpt brain exit", code, errors.join(" | "), errTail); recordChatGPT({ kind: "brain", ok: false, ms: Date.now() - started }); noteResult("chatgpt", false); }
+    }
+    afterTask();
   });
   child.stdin.end(prompt);
 }
@@ -919,9 +1088,10 @@ let statusCache = null, statusAt = 0;
 async function getStatus(force) {
   if (!force && statusCache && Date.now() - statusAt < 30_000) return statusCache;
   const s = loadSettings();
+  const gptUsed = s.chatgptEnabled || s.brain === "chatgpt";
   const [cl, cx] = await Promise.all([
     FAKE_BRAIN ? { stdout: '{"loggedIn":true}' } : runExe(CLAUDE_EXE, ["auth", "status"], { timeoutMs: 30_000 }),
-    s.chatgptEnabled ? runExe(process.execPath, [CODEX_JS, "login", "status"], { timeoutMs: 30_000 }, CODEX_JS) : null,
+    gptUsed ? runExe(process.execPath, [CODEX_JS, "login", "status"], { timeoutMs: 30_000 }, CODEX_JS) : null,
   ]);
   let claudeOk = false;
   try { claudeOk = !!JSON.parse(cl.stdout.slice(cl.stdout.indexOf("{"))).loggedIn; } catch {}
@@ -930,7 +1100,7 @@ async function getStatus(force) {
   const geminiInstalled = process.env.BRAIN_FAKE_HELPERS === "1" || fs.existsSync(AGY_EXE);
   statusCache = {
     claude: { ok: claudeOk, detail: claudeOk ? "Signed in" : "Not signed in - run: claude auth login" },
-    chatgpt: !s.chatgptEnabled
+    chatgpt: !gptUsed
       ? { ok: false, off: true, detail: "Switched off - turn it on in Settings" }
       : { ok: chatgptOk, detail: chatgptOk ? cxOut.split(/\r?\n/)[0] : "Not signed in" },
     gemini: {

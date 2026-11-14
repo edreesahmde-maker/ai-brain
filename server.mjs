@@ -1,16 +1,23 @@
 #!/usr/bin/env node
-// MCP server: gives Claude tools to talk to ChatGPT (Codex CLI) and Gemini
-// (Antigravity CLI) using subscription logins - no API keys. stdout is reserved
-// for the MCP protocol - never console.log here.
+// MCP server: gives the brain (Claude, or ChatGPT when the user picked it) tools to talk to the
+// helper AIs - ChatGPT (Codex CLI), Gemini (Antigravity CLI), Claude (Claude Code) - using subscription
+// logins, no API keys. stdout is reserved for the MCP protocol - never console.log here.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import http from "node:http";
-import { askChatGPT, askGemini, generateImage, generateVideo, googleKeyState, resetConversations, LOGS } from "./lib.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { askChatGPT, askGemini, askClaude, generateImage, generateVideo, googleKeyState, resetConversations, forbidden, LOGS, WORK, MEDIA_RE } from "./lib.mjs";
 import { flowLook, flowClick, flowType, flowWait, flowSaveVideos, flowMakeVideo } from "./flow.mjs";
 
+// Which AI is the brain (AI_BRAIN_BRAIN): "claude" (default) or "chatgpt". The brain is never its own helper.
+const BRAIN = process.env.AI_BRAIN_BRAIN === "chatgpt" ? "chatgpt" : "claude";
 // The AI Brain app sets AI_BRAIN_CHATGPT=0 while ChatGPT is switched off in its settings.
-const CHATGPT = process.env.AI_BRAIN_CHATGPT !== "0";
+const CHATGPT = process.env.AI_BRAIN_CHATGPT !== "0" && BRAIN !== "chatgpt";
+// The second helper next to Gemini (ask_both): ChatGPT, or Claude when ChatGPT is the brain.
+const BOTH = BRAIN === "chatgpt" ? "Claude" : CHATGPT ? "ChatGPT" : null;
 
 const server = new McpServer({ name: "ai-brain", version: "3.1.0" });
 
@@ -321,6 +328,10 @@ if (process.env.AI_BRAIN_APPS === "1" && APP_URL && CONTROL_KEY) {
     inputSchema: { code: z.string().min(1).max(100000).describe("The Python code") },
   }, async (a) => {
     try {
+      if (BRAIN === "chatgpt") { // Claude is asked through --permission-prompt-tool; ChatGPT through this
+        const no = await mayRun("mcp__ai-brain__app_python", { code: a.code });
+        if (no) return no;
+      }
       const r = await step("python", { code: a.code });
       return asText(r, (x) => `${kindName(x)}\n${x.output ? `Printed:\n${x.output}\n` : ""}${x.result != null ? `Result: ${x.result}` : x.output ? "" : "Done (nothing printed, no result)."}`);
     } catch (e) { return fail(e); }
@@ -424,11 +435,29 @@ if (process.env.AI_BRAIN_INSPECT === "1" && APP_URL && CONTROL_KEY) {
   }, run("go"));
 }
 
-if (CHATGPT) server.registerTool(
+if (BRAIN === "chatgpt") server.registerTool(
+  "ask_claude",
+  {
+    title: "Ask Claude",
+    description:
+      "Send a message to Claude (the user's Claude login via Claude Code) and get its reply. Claude is strong at careful " +
+      "reasoning, writing and code review. It has no tools here (it cannot read files: put what it needs in the message). " +
+      "Continues the same conversation unless new_conversation is true.",
+    inputSchema: {
+      prompt: z.string().describe("The message to send"),
+      new_conversation: z.boolean().optional().describe("Start a fresh conversation"),
+    },
+  },
+  async ({ prompt, new_conversation }) => {
+    try { return text((await askClaude(prompt, { newConversation: new_conversation })).text); } catch (e) { return fail(e); }
+  }
+);
+
+if (BOTH) server.registerTool(
   "ask_both",
   {
-    title: "Ask ChatGPT and Gemini",
-    description: "Send the same message to ChatGPT and Gemini at the same time and return both replies.",
+    title: `Ask ${BOTH} and Gemini`,
+    description: `Send the same message to ${BOTH} and Gemini at the same time and return both replies.`,
     inputSchema: {
       prompt: z.string().describe("The message to send to both"),
       new_conversation: z.boolean().optional().describe("Start fresh conversations"),
@@ -436,9 +465,9 @@ if (CHATGPT) server.registerTool(
   },
   async ({ prompt, new_conversation }) => {
     const opts = { newConversation: new_conversation };
-    const [c, g] = await Promise.allSettled([askChatGPT(prompt, opts), askGemini(prompt, opts)]);
+    const [c, g] = await Promise.allSettled([BOTH === "Claude" ? askClaude(prompt, opts) : askChatGPT(prompt, opts), askGemini(prompt, opts)]);
     const show = (r) => (r.status === "fulfilled" ? r.value.text : `ERROR: ${r.reason?.message || r.reason}`);
-    return text(`=== ChatGPT ===\n${show(c)}\n\n=== Gemini ===\n${show(g)}`);
+    return text(`=== ${BOTH} ===\n${show(c)}\n\n=== Gemini ===\n${show(g)}`);
   }
 );
 
@@ -446,7 +475,7 @@ server.registerTool(
   "reset_conversations",
   {
     title: "Reset conversations",
-    description: `Forget the ongoing ChatGPT and Gemini conversations so the next message starts fresh. Transcripts stay in ${LOGS}.`,
+    description: `Forget the ongoing conversations with the helpers so the next message starts fresh. Transcripts stay in ${LOGS}.`,
     inputSchema: {},
   },
   async () => { resetConversations(); return text("Conversations reset."); }
@@ -457,7 +486,27 @@ server.registerTool(
 // wrong (app gone, no answer, bad reply) counts as "no".
 const APPROVE_URL = process.env.AI_BRAIN_APPROVE_URL;
 const APPROVE_KEY = process.env.AI_BRAIN_APPROVE_KEY;
-if (APPROVE_URL && APPROVE_KEY) server.registerTool(
+/** Ask the AI Brain window whether this step may run: { behavior: "allow" } or { behavior: "deny", message }. */
+function askUser(tool_name, input, tool_use_id = "") {
+  return new Promise((resolve, reject) => {
+    const u = new URL(APPROVE_URL);
+    const body = JSON.stringify({ tool_name, input: input ?? {}, tool_use_id });
+    const req = http.request(u, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), Origin: u.origin, "X-Brain-Key": APPROVE_KEY },
+    }, (res) => {
+      let s = "";
+      res.setEncoding("utf8");
+      res.on("data", (d) => { s += d; });
+      res.on("end", () => { try { resolve(res.statusCode === 200 ? JSON.parse(s) : { behavior: "deny", message: "The app refused the request." }); } catch (e) { reject(e); } });
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+// Claude asks through this tool (--permission-prompt-tool). ChatGPT's own file and command tools are
+// switched off; it gets the tools below instead, and each one asks the same way before it acts.
+if (BRAIN === "claude" && APPROVE_URL && APPROVE_KEY) server.registerTool(
   "approve",
   {
     title: "Ask the user",
@@ -468,21 +517,7 @@ if (APPROVE_URL && APPROVE_KEY) server.registerTool(
     const no = (message) => text(JSON.stringify({ behavior: "deny", message }));
     if (/approve/i.test(args.tool_name)) return no("Not allowed.");
     try {
-      const reply = await new Promise((resolve, reject) => {
-        const u = new URL(APPROVE_URL);
-        const body = JSON.stringify({ tool_name: args.tool_name, input: args.input ?? {}, tool_use_id: args.tool_use_id || "" });
-        const req = http.request(u, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), Origin: u.origin, "X-Brain-Key": APPROVE_KEY },
-        }, (res) => {
-          let s = "";
-          res.setEncoding("utf8");
-          res.on("data", (d) => { s += d; });
-          res.on("end", () => { try { resolve(res.statusCode === 200 ? JSON.parse(s) : { behavior: "deny", message: "The app refused the request." }); } catch (e) { reject(e); } });
-        });
-        req.on("error", reject);
-        req.end(body);
-      });
+      const reply = await askUser(args.tool_name, args.input, args.tool_use_id || "");
       if (reply?.behavior === "allow") return text(JSON.stringify({ behavior: "allow", updatedInput: args.input ?? {} }));
       return no(String(reply?.message || "The user did not allow this."));
     } catch {
@@ -490,5 +525,151 @@ if (APPROVE_URL && APPROVE_KEY) server.registerTool(
     }
   }
 );
+
+// ---------- the ChatGPT brain's files and commands ----------
+// Codex runs with its own shell and file tools switched off (read-only sandbox, no shell), so these are
+// its only way to read, change and run things. Same rules as Claude: reading only inside the working
+// folder and the folders the user gave; every change and command goes through the approval check
+// (asks the user, or "always allow"), and sign-in data and AI Brain's keys are never touched.
+let FOLDERS = [WORK];
+try { const f = JSON.parse(process.env.AI_BRAIN_FOLDERS || "[]"); if (Array.isArray(f)) FOLDERS = [WORK, ...f.filter((x) => typeof x === "string")]; } catch { /* only the workspace */ }
+const within = (child, parent) => { const r = path.relative(path.resolve(parent).toLowerCase(), path.resolve(child).toLowerCase()); return r === "" || (!!r && !r.startsWith("..") && !path.isAbsolute(r)); };
+/** The full path, or throws when it is outside the allowed folders or off limits. */
+function allowedPath(p) {
+  if (typeof p !== "string" || !p.trim()) throw new Error("Give a file path.");
+  const full = path.resolve(WORK, p.trim());
+  if (forbidden({ p: full })) throw new Error("Not allowed: AI Brain never lets the brain touch sign-in data or its own keys.");
+  // Follow links, so a link inside the workspace cannot lead outside it.
+  let real = full;
+  try { real = fs.realpathSync.native(full); } catch { try { real = path.join(fs.realpathSync.native(path.dirname(full)), path.basename(full)); } catch { /* new folder */ } }
+  if (!FOLDERS.some((f) => within(full, f) && within(real, f))) throw new Error(`Not allowed: only files inside ${FOLDERS.join("; ")} can be used.`);
+  return full;
+}
+/** null when the step may run, otherwise the tool answer that says why not. */
+async function mayRun(tool, input) {
+  if (!APPROVE_URL || !APPROVE_KEY) return fail("File and command access is switched off in AI Brain's Settings (Read only). Tell the user what you wanted to do; they can switch it on in Settings > The brain.");
+  try {
+    const r = await askUser(tool, input);
+    return r?.behavior === "allow" ? null : fail(`Not done: ${r?.message || "the user did not allow it."} Do not try the same thing another way; tell the user what you wanted to do and why.`);
+  } catch { return fail("AI Brain could not ask the user, so this was not done."); }
+}
+const MAX_READ = 200_000;
+const IMG_TYPES = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
+if (BRAIN === "chatgpt") {
+  server.registerTool("read_file", {
+    title: "Read a file",
+    description: "Read a text file (or look at a picture: png, jpg, webp, gif) inside your working folder or the folders the user gave you, such as files the user attached. Relative paths start in the working folder. Long files: read part of it with offset (first line, from 1) and limit (number of lines).",
+    inputSchema: {
+      path: z.string().describe("The file's full path, or a path relative to the working folder"),
+      offset: z.number().int().min(1).optional().describe("First line to read (from 1)"),
+      limit: z.number().int().min(1).optional().describe("How many lines to read"),
+    },
+  }, async (a) => {
+    try {
+      const full = allowedPath(a.path);
+      const st = fs.statSync(full);
+      if (st.isDirectory()) return fail("That is a folder: use list_folder.");
+      const ext = path.extname(full).toLowerCase();
+      if (IMG_TYPES[ext]) {
+        if (st.size > 15 * 1024 * 1024) return fail("That picture is too big to look at (over 15 MB).");
+        return { content: [{ type: "text", text: `${full} (${st.size} bytes)` }, { type: "image", data: fs.readFileSync(full).toString("base64"), mimeType: IMG_TYPES[ext] }] };
+      }
+      if (MEDIA_RE.test(full)) return text(`${full} is a video (${st.size} bytes); it cannot be read as text.`);
+      if (st.size > 20 * 1024 * 1024) return fail("That file is too big to read (over 20 MB).");
+      const buf = fs.readFileSync(full);
+      if (buf.subarray(0, 8000).includes(0)) return text(`${full} is not a text file (${st.size} bytes).`);
+      const lines = buf.toString("utf8").split(/\r?\n/);
+      const from = (a.offset || 1) - 1, to = a.limit ? from + a.limit : lines.length;
+      let out = lines.slice(from, to).map((l, i) => `${from + i + 1}\t${l}`).join("\n");
+      let note = "";
+      if (out.length > MAX_READ) { out = out.slice(0, MAX_READ); note = `\n… (cut at ${MAX_READ} characters: read the rest with offset and limit)`; }
+      return text(`${full} - lines ${from + 1}-${Math.min(to, lines.length)} of ${lines.length}\n${out}${note}`);
+    } catch (e) { return fail(e.code === "ENOENT" ? "That file does not exist." : e); }
+  });
+  server.registerTool("list_folder", {
+    title: "List a folder",
+    description: "List what is inside a folder (inside your working folder or the folders the user gave you). Relative paths start in the working folder.",
+    inputSchema: { path: z.string().optional().describe("The folder (default: the working folder)") },
+  }, async (a) => {
+    try {
+      const full = allowedPath(a.path || WORK);
+      const items = fs.readdirSync(full, { withFileTypes: true });
+      const rows = items.slice(0, 500).map((d) => {
+        if (d.isDirectory()) return `[folder] ${d.name}`;
+        let size = "";
+        try { size = ` (${fs.statSync(path.join(full, d.name)).size} bytes)`; } catch { /* gone */ }
+        return `${d.name}${size}`;
+      });
+      return text(`${full}\n${rows.join("\n") || "(empty)"}${items.length > 500 ? `\n… and ${items.length - 500} more` : ""}`);
+    } catch (e) { return fail(e.code === "ENOENT" ? "That folder does not exist." : e); }
+  });
+}
+// The change tools exist only while File and command access allows changes (like Claude's Write, Edit
+// and PowerShell): in "Read only" the app gives no approval key.
+if (BRAIN === "chatgpt" && APPROVE_URL && APPROVE_KEY) {
+  server.registerTool("write_file", {
+    title: "Write a file",
+    description: "Create a file, or replace a whole file, with this text (inside your working folder or the folders the user gave you). The user may have to allow it first.",
+    inputSchema: { path: z.string().describe("The file's full path, or a path relative to the working folder"), content: z.string().describe("The whole new text of the file") },
+  }, async (a) => {
+    try {
+      const full = allowedPath(a.path);
+      const no = await mayRun("Write", { file_path: full, content: a.content });
+      if (no) return no;
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, a.content);
+      return text(`Wrote ${full} (${Buffer.byteLength(a.content)} bytes).`);
+    } catch (e) { return fail(e); }
+  });
+  server.registerTool("edit_file", {
+    title: "Change part of a file",
+    description: "Replace one exact piece of text in a file with new text. old_string must match the file exactly and only once (or set replace_all). The user may have to allow it first.",
+    inputSchema: {
+      path: z.string().describe("The file's full path, or a path relative to the working folder"),
+      old_string: z.string().min(1).describe("The exact text to replace"),
+      new_string: z.string().describe("The text to put in its place"),
+      replace_all: z.boolean().optional().describe("Replace every match (default: only one match allowed)"),
+    },
+  }, async (a) => {
+    try {
+      const full = allowedPath(a.path);
+      let now;
+      try { now = fs.readFileSync(full, "utf8"); } catch { return fail("That file does not exist: use write_file to create it."); }
+      const n = now.split(a.old_string).length - 1;
+      if (!n) return fail("old_string is not in the file (it must match exactly, spaces and line ends too). Read the file again.");
+      if (n > 1 && !a.replace_all) return fail(`old_string is in the file ${n} times: give more of the text around it, or set replace_all.`);
+      const no = await mayRun("Edit", { file_path: full, old_string: a.old_string, new_string: a.new_string, replace_all: !!a.replace_all });
+      if (no) return no;
+      if (fs.readFileSync(full, "utf8") !== now) return fail("The file changed while waiting for the user: read it again.");
+      fs.writeFileSync(full, a.replace_all ? now.split(a.old_string).join(a.new_string) : now.replace(a.old_string, () => a.new_string));
+      return text(`Changed ${full} (${a.replace_all ? n : 1} place${(a.replace_all ? n : 1) > 1 ? "s" : ""}).`);
+    } catch (e) { return fail(e); }
+  });
+  server.registerTool("run_command", {
+    title: "Run a PowerShell command",
+    description: "Run a Windows PowerShell command in your working folder and get its output (stops after 10 minutes). The user may have to allow it first. Use it for things the other tools cannot do (searching many files, running programs, git, npm...).",
+    inputSchema: { command: z.string().min(1).describe("The PowerShell command"), description: z.string().optional().describe("In a few words: what it is for") },
+  }, async (a) => {
+    const no = await mayRun("PowerShell", { command: a.command, description: a.description || "" });
+    if (no) return no;
+    // The command never sees AI Brain's keys.
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^AI_BRAIN_|^BRAIN_/i.test(k)));
+    return new Promise((resolve) => {
+      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", a.command], { cwd: WORK, env, windowsHide: true });
+      let out = "", cut = false;
+      const add = (d) => { if (out.length < 60_000) out += d; else cut = true; };
+      child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+      child.stdout.on("data", add); child.stderr.on("data", add);
+      child.stdin.end();
+      const timer = setTimeout(() => { cut = true; spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true }); }, 10 * 60_000);
+      child.on("error", (e) => { clearTimeout(timer); resolve(fail(`The command could not start: ${e.message}`)); });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        const body = `${out.trim() || "(no output)"}${cut ? "\n… (output cut, or stopped after 10 minutes)" : ""}`;
+        resolve({ content: [{ type: "text", text: `Exit code ${code}\n${body}` }], ...(code ? { isError: true } : {}) });
+      });
+    });
+  });
+}
 
 await server.connect(new StdioServerTransport());

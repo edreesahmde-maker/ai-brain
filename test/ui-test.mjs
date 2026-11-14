@@ -41,7 +41,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = spawn(process.execPath, [path.join(ROOT, "app", "app-server.mjs")], {
   env: {
     ...process.env, BRAIN_PORT: String(PORT), BRAIN_DATA_DIR: DATA, BRAIN_NO_OPEN: "1", BRAIN_FAKE_DISCORD: "running",
-    BRAIN_FAKE_CLAUDE: path.join(ROOT, "test", "fake-claude.mjs"), BRAIN_FAKE_HELPERS: "1",
+    BRAIN_FAKE_CLAUDE: path.join(ROOT, "test", "fake-claude.mjs"), BRAIN_FAKE_CODEX: path.join(ROOT, "test", "fake-codex.mjs"), BRAIN_FAKE_HELPERS: "1",
     BRAIN_FAKE_IMAGE: FIXTURE, BRAIN_FAKE_VIDEO: path.join(ROOT, "test", "fixture.mp4"), BRAIN_FAKE_DELAY_MS: "400", BRAIN_FAKE_CODEX_HOME: CODEX_HOME,
   },
   stdio: "ignore",
@@ -945,6 +945,22 @@ try {
   await until(() => document.querySelector("#sb-access").hidden && document.querySelector("#row-folders").hidden, "Read only hides the badge again");
   await page.keyboard.press("Escape");
   await fetch(`${BASE}/api/settings`, { method: "POST", headers: { Origin: BASE, "Content-Type": "application/json" }, body: JSON.stringify({ access: "read", folders: [] }) });
+
+  // ---------- ChatGPT as the brain ----------
+  console.log("ChatGPT as the brain");
+  await page.keyboard.down("Control"); await page.keyboard.press("Comma"); await page.keyboard.up("Control");
+  await until(() => document.querySelector("#dlg-settings").open && document.querySelector("#set-brain").value === "claude" && /Claude plans every task/.test(document.querySelector("#set-brain-note").textContent), "Claude is the brain by default");
+  await page.select("#set-brain", "chatgpt");
+  await until(() => /ChatGPT plans every task/.test(document.querySelector("#set-brain-note").textContent) && /ChatGPT can read files/.test(document.querySelector("#set-access-note").textContent), "picking ChatGPT says so, and the access note names ChatGPT");
+  ok((await (await fetch(`${BASE}/api/settings`)).json()).brain === "chatgpt", "the choice is saved");
+  await page.keyboard.press("Escape");
+  await until(() => /Brain: ChatGPT/.test(document.querySelector("#stage-sub").textContent) && !document.querySelector("#chips .chip[data-who='chatgpt']").hidden, "the stage says ChatGPT is the brain; its status chip shows");
+  await sendTask("Hello from the UI [claude]");
+  await until(() => /ChatGPT brain \(test reply\)/.test([...document.querySelectorAll(".msg.claude .md")].at(-1)?.textContent || "") && [...document.querySelectorAll(".msg.claude .who b")].at(-1)?.textContent === "ChatGPT", "the answer is ChatGPT's and is labelled ChatGPT");
+  await until(() => [...document.querySelectorAll("#thread .hm-label")].some((l) => /^ChatGPT/.test(l.textContent) && /to Claude/.test(l.textContent)) && [...document.querySelectorAll("#thread .msg.sys")].some((m) => m.textContent === "ChatGPT asked Claude for help"), "its question to Claude shows in the chat (Claude has no helper panel)");
+  await idle("the ChatGPT task ends");
+  await fetch(`${BASE}/api/settings`, { method: "POST", headers: { Origin: BASE, "Content-Type": "application/json" }, body: JSON.stringify({ brain: "claude" }) });
+  await until(() => /^Model: /.test(document.querySelector("#stage-sub").textContent), "back to Claude: the stage shows Claude's model again");
 
   // ---------- video ----------
   console.log("video studio");

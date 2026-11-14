@@ -452,8 +452,13 @@
       <label class="row" id="row-dim" hidden><span>Darken the picture<small id="set-dim-val">70%</small></span><input type="range" id="set-dim" min="0" max="95" step="5"></label>
     </section>
     <section>
-      <h3>The brain (Claude)</h3>
-      <label class="row"><span>Model<small>Smarter models use your Claude limit faster</small></span>
+      <h3>The brain</h3>
+      <label class="row"><span>Brain<small id="set-brain-note">Claude plans every task and uses your Claude plan. ChatGPT and Gemini are its helpers.</small></span>
+        <select id="set-brain">
+          <option value="claude">Claude</option>
+          <option value="chatgpt">ChatGPT (uses your ChatGPT plan)</option>
+        </select></label>
+      <label class="row"><span>Claude model<small>For Claude as the brain or as a helper. Smarter models use your Claude limit faster</small></span>
         <select id="set-model">
           <option value="auto">Automatic (your Claude default)</option>
           <option value="fable">Fable – most capable</option>
@@ -465,7 +470,7 @@
         <select id="set-effort">
           <option value="auto">Automatic</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
         </select></label>
-      <label class="row"><span>Memory limit<small>Each message re-sends the whole conversation. Past this size Claude sums it up, so messages use much less of your plan</small></span>
+      <label class="row"><span>Memory limit<small>Each message re-sends the whole conversation. Past this size the brain sums it up, so messages use much less of your plan</small></span>
         <select id="set-memory">
           <option value="60">60k tokens (uses the least)</option><option value="100">100k tokens (recommended)</option><option value="150">150k tokens</option><option value="0">Never sum up (uses the most)</option>
         </select></label>

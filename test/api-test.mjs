@@ -38,7 +38,7 @@ function startServer(extraEnv = {}) {
     env: {
       ...process.env, BRAIN_PORT: String(PORT), BRAIN_DATA_DIR: DATA, BRAIN_NO_OPEN: "1",
       BRAIN_FAKE_DISCORD: "stopped",
-      BRAIN_FAKE_CLAUDE: path.join(ROOT, "test", "fake-claude.mjs"), BRAIN_FAKE_HELPERS: "1",
+      BRAIN_FAKE_CLAUDE: path.join(ROOT, "test", "fake-claude.mjs"), BRAIN_FAKE_CODEX: path.join(ROOT, "test", "fake-codex.mjs"), BRAIN_FAKE_HELPERS: "1",
       BRAIN_FAKE_IMAGE: FIXTURE, BRAIN_FAKE_VIDEO: path.join(ROOT, "test", "fixture.mp4"), BRAIN_FAKE_DELAY_MS: "150", BRAIN_APPROVAL_MS: "4000", BRAIN_FAKE_CODEX_HOME: CODEX_HOME, ...extraEnv,
     },
     stdio: "ignore",
@@ -693,6 +693,7 @@ try {
   await accessTests();
   await appsTests();
   await inspectApiTests();
+  await chatgptBrainTests();
   themeMoveTest();
 } catch (e) {
   failed++;
@@ -940,6 +941,119 @@ async function inspectApiTests() {
   ok((await extPost("/api/inspect/ext/hello", {}, EXT, code)).status === 403, "a new pairing code locks the old one out");
   ok(!fs.readFileSync(path.join(DATA, "inspect-key.json"), "utf8").includes(code), "the old code is gone from the computer");
   await post("/api/settings", { inspectBrain: false });
+}
+
+// ChatGPT as the brain (Settings > The brain > Brain). The fake Codex calls AI Brain's REAL tool server.
+async function chatgptBrainTests() {
+  console.log("ChatGPT as the brain");
+  const WORKDIR = path.join(DATA, "workspace");
+  const codexArgs = () => fs.readFileSync(path.join(DATA, "fake-codex-args.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const there = (f) => fs.existsSync(path.join(WORKDIR, f));
+  const rm = (f) => { try { fs.unlinkSync(path.join(WORKDIR, f)); } catch {} };
+  const instr = (a) => JSON.parse(a.conf.developer_instructions);
+  const start = async (text, files) => { const from = events.length; await post("/api/task", { text, files }); return from; };
+  const end = async (from) => {
+    const fin = await waitFor((e) => e.type === "final", 30_000, from);
+    await waitFor((e) => e.type === "busy" && e.value === false, 5000, from);
+    return { fin, slice: events.slice(from) };
+  };
+  const answer = async (from, allow) => { const ap = await waitFor((e) => e.type === "approval", 15_000, from); await post("/api/approval/answer", { id: ap?.id, allow }); return ap; };
+
+  ok((await get("/api/settings")).body.brain === "claude", "Claude is the brain by default");
+  ok((await post("/api/settings", { brain: "gemini" })).body.brain === "claude", "only Claude or ChatGPT can be the brain");
+  ok((await post("/api/settings", { brain: "chatgpt", access: "read", folders: [] })).body.brain === "chatgpt", "ChatGPT can be picked as the brain");
+  const st = (await get("/api/status?force=1")).body;
+  ok(st.chatgpt && !st.chatgpt.off, "with ChatGPT as the brain its sign-in is checked even while the ChatGPT helper is off");
+
+  let x = await task("Hello brain");
+  let a = codexArgs().at(-1);
+  ok(x.fin && !x.fin.isError && x.fin.brain === "chatgpt" && /ChatGPT brain \(test reply\)/.test(x.fin.text) && /resumed: no/.test(x.fin.text), "ChatGPT answers the task", x.fin?.text);
+  ok(x.slice.find((e) => e.type === "task")?.brain === "chatgpt" && x.slice.some((e) => e.type === "log" && /^ChatGPT online/.test(e.text)), "the task is marked as ChatGPT's; Activity says ChatGPT is online");
+  ok(a.args[0] === "exec" && a.conf.sandbox_mode === '"read-only"' && a.conf["features.shell_tool"] === "false" && a.conf["features.unified_exec"] === "false", "Codex runs read-only with its own shell switched off");
+  ok(a.conf["mcp_servers.ai-brain.default_tools_approval_mode"] === '"approve"' && /AI_BRAIN_BRAIN="chatgpt"/.test(a.conf["mcp_servers.ai-brain.env"]), "AI Brain's tools are connected as the ChatGPT brain's");
+  ok(!/AI_BRAIN_APPROVE_KEY/.test(a.conf["mcp_servers.ai-brain.env"]) && /can NOT change files/.test(instr(a)), "read only: no approval key, and ChatGPT is told it cannot change files");
+  ok(/BRAIN of the "AI Brain"/.test(instr(a)) && /ask_claude/.test(instr(a)) && /shell, file and patch tools are switched off/.test(instr(a)), "AI Brain's instructions reach ChatGPT, with Claude as a helper");
+  ok(x.fin.gptUsage?.in === 2000 && !x.fin.usage, "its tokens are counted as ChatGPT's, not Claude's");
+  const used = fs.readFileSync(path.join(DATA, "usage-chatgpt.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((u) => u.kind === "brain");
+  ok(used.length === 1 && used[0].ok && used[0].in === 2000 && used[0].limits?.long?.pct === 23, "the ChatGPT usage panel counts it, with the plan limits");
+
+  x = await task("Again");
+  a = codexArgs().at(-1);
+  ok(a.args[1] === "resume" && a.resume && /resumed: yes/.test(x.fin.text), "the next task continues the same ChatGPT conversation");
+
+  x = await task("[tools] which tools");
+  const tools = (x.fin.text.match(/tools: (.*)/) || [])[1]?.split(",") || [];
+  ok(["ask_claude", "ask_gemini", "ask_both", "read_file", "list_folder"].every((t) => tools.includes(t)), "read only: it can ask Claude and Gemini and read files", tools.join());
+  ok(!["ask_chatgpt", "approve", "write_file", "edit_file", "run_command"].some((t) => tools.includes(t)), "read only: no ChatGPT helper (it is the brain), no approve tool, no change tools");
+
+  x = await task("[claude] ask Claude");
+  const call = x.slice.find((e) => e.type === "call");
+  ok(call?.from === "chatgpt" && call.to === "claude" && x.slice.some((e) => e.type === "reply" && e.to === "claude" && /Claude \(test reply\)/.test(e.text)), "ChatGPT asks Claude; the window shows the call and the reply");
+  x = await task("[both] ask both");
+  const calls = x.slice.filter((e) => e.type === "call").map((e) => e.to).sort().join();
+  ok(calls === "claude,gemini" && x.slice.filter((e) => e.type === "reply" && !e.isError).length === 2, "ask_both goes to Claude and Gemini");
+
+  rm("fake-gpt-change.txt");
+  x = await task("[write] read only");
+  ok(/write: denied/.test(x.fin.text) && !there("fake-gpt-change.txt") && !x.slice.some((e) => e.type === "approval"), "read only: a change is refused without asking");
+  x = await task("[secret] [outside]");
+  ok(/secret: refused - Not allowed: AI Brain never lets the brain touch sign-in data/.test(x.fin.text), "the .codex folder is never read");
+  ok(/outside: refused - Not allowed: only files inside/.test(x.fin.text), "files outside the allowed folders are not read");
+  fs.mkdirSync(path.join(WORKDIR, "uploads"), { recursive: true });
+  const note = path.join(WORKDIR, "uploads", "note.txt");
+  fs.writeFileSync(note, "the attached note says 42\n");
+  x = await task("[read] read the note", [note]);
+  ok(/read: ok - .*the attached note says 42/.test(x.fin.text), "it reads an attached file");
+
+  console.log("ChatGPT as the brain: asks before changes");
+  await post("/api/settings", { access: "ask" });
+  let from = await start("[tools] [write] ask");
+  let ap = await answer(from, true);
+  x = await end(from);
+  a = codexArgs().at(-1);
+  ok(ap?.title === "ChatGPT wants to write a file" && /fake-gpt-change\.txt$/.test(ap.path) && /made by the ChatGPT brain/.test(ap.detail), "a file write asks first, as ChatGPT", JSON.stringify(ap));
+  ok(/write: allowed/.test(x.fin.text) && fs.readFileSync(path.join(WORKDIR, "fake-gpt-change.txt"), "utf8") === "made by the ChatGPT brain\n", "Allow: the file is written");
+  ok(x.slice.filter((e) => e.type === "log" && /^write_file: /.test(e.text)).length === 1, "Activity lists the write once");
+  ok(/AI_BRAIN_APPROVE_KEY/.test(a.conf["mcp_servers.ai-brain.env"]) && ["write_file", "edit_file", "run_command"].every((t) => x.fin.text.includes(t)), "ask: the change tools are there");
+  from = await start("[edit] change it");
+  ap = await answer(from, true);
+  x = await end(from);
+  ok(ap?.title === "ChatGPT wants to change a file" && /changed by the ChatGPT brain/.test(fs.readFileSync(path.join(WORKDIR, "fake-gpt-change.txt"), "utf8")), "an edit asks first, then changes the file");
+  rm("fake-gpt-change.txt");
+  from = await start("[write] deny it");
+  ap = await answer(from, false);
+  x = await end(from);
+  ok(/write: denied - Not done/.test(x.fin.text) && !there("fake-gpt-change.txt"), "Deny: nothing is written");
+  from = await start("[command] run it");
+  ap = await answer(from, true);
+  x = await end(from);
+  ok(ap?.title === "ChatGPT wants to run a command" && /hello 42/.test(x.fin.text), "a command asks first, then runs", x.fin?.text);
+  ok(/key=\./.test(x.fin.text), "the command never sees AI Brain's approval key");
+
+  await post("/api/settings", { access: "auto" });
+  rm("fake-gpt-change.txt");
+  x = await task("[write] always allow");
+  ok(/write: allowed/.test(x.fin.text) && there("fake-gpt-change.txt") && !x.slice.some((e) => e.type === "approval") && x.slice.some((e) => e.type === "log" && /always allow is on/.test(e.text)), "always allow: written without a question, and logged");
+  rm("fake-gpt-change.txt");
+  await post("/api/settings", { access: "read" });
+
+  console.log("ChatGPT as the brain: problems");
+  x = await task("[error] fail");
+  ok(x.fin?.isError && x.fin.brain === "chatgpt" && /before ChatGPT finished/.test(x.fin.text) && /Test error from the fake ChatGPT brain/.test(x.fin.text), "a failed turn shows ChatGPT's error");
+  from = await start("[hang] forever");
+  await waitFor((e) => e.type === "stream" && /Working on it/.test(e.text || ""), 8000, from);
+  await post("/api/stop");
+  x = await end(from);
+  ok(x.fin?.stopped, "Stop ends a ChatGPT task");
+  const stateFile = path.join(DATA, "state.json");
+  fs.writeFileSync(stateFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(stateFile, "utf8")), chatgptBrainThread: "stale-thread" }));
+  x = await task("After a lost conversation");
+  ok(x.fin && !x.fin.isError && /resumed: no/.test(x.fin.text) && x.slice.some((e) => e.type === "log" && /Could not continue the previous ChatGPT conversation/.test(e.text)), "a lost ChatGPT conversation recovers with a fresh one");
+  ok(x.slice.filter((e) => e.type === "task").length === 1, "recovery does not repeat the task bubble");
+
+  await post("/api/settings", { brain: "claude" });
+  x = await task("Claude again");
+  ok(x.fin && !x.fin.isError && !x.fin.brain && !/ChatGPT brain/.test(x.fin.text), "switching back: Claude is the brain again");
 }
 
 // A saved theme that was removed in 3.1 (the three Black Clover ones) opens as Berserk.

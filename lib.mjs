@@ -1,5 +1,5 @@
-// Core logic: run ChatGPT (Codex CLI) and Gemini (Antigravity CLI, agy) headlessly,
-// using the user's subscription logins. No API keys. Both run read-only in ./workspace.
+// Core logic: run ChatGPT (Codex CLI), Gemini (Antigravity CLI, agy) and Claude (Claude Code) headlessly,
+// using the user's subscription logins. No API keys. As helpers they run read-only in ./workspace.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -14,6 +14,16 @@ const NPM_ROOT =
   path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm", "node_modules");
 
 export const CODEX_JS = path.join(NPM_ROOT, "@openai", "codex", "bin", "codex.js");
+// Claude Code: the brain by default, a helper when ChatGPT is the brain.
+function findClaude() {
+  if (process.env.CLAUDE_EXE) return process.env.CLAUDE_EXE;
+  const c = [
+    path.join(os.homedir(), ".local", "bin", "claude.exe"),
+    path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Links", "claude.exe"),
+  ];
+  return c.find((p) => fs.existsSync(p)) || "claude";
+}
+export const CLAUDE_EXE = findClaude();
 // Gemini: Google retired Gemini CLI login for personal accounts, so we use the
 // Antigravity CLI (agy), which signs in with the user's Google account.
 export const AGY_EXE =
@@ -71,7 +81,8 @@ export const DEFAULT_SETTINGS = {
   animations: true,
   customBg: null,         // file name inside DATA/custom, or null
   bgDim: 70,              // how dark the overlay on a custom background is (0-95)
-  brainModel: "opus",     // auto | fable | opus | sonnet | haiku
+  brain: "claude",        // claude | chatgpt - which AI is the brain (the other ones are its helpers)
+  brainModel: "opus",     // auto | fable | opus | sonnet | haiku (Claude's model, as the brain or as a helper)
   effort: "auto",         // auto | low | medium | high
   memoryLimit: 100,       // k tokens: past this Claude Code sums the conversation up (0 = never)
   geminiModel: "auto",    // auto | a model id from "agy models"
@@ -108,6 +119,7 @@ const RULES = {
   animations: (v) => typeof v === "boolean",
   customBg: (v) => v === null || (typeof v === "string" && /^[\w.\-]{1,120}$/.test(v)),
   bgDim: (v) => Number.isInteger(v) && v >= 0 && v <= 95,
+  brain: (v) => ["claude", "chatgpt"].includes(v),
   brainModel: (v) => ["auto", "fable", "opus", "sonnet", "haiku"].includes(v),
   effort: (v) => ["auto", "low", "medium", "high"].includes(v),
   memoryLimit: (v) => [0, 60, 100, 150].includes(v),
@@ -237,7 +249,7 @@ let codexSignedInAt = 0;
 // ~/.codex/config.toml (browser, computer use, documents...) and the "notify" program run after
 // each turn. Starting those took about 4 of the ~11 seconds of even a one-word answer. Only for
 // AI Brain's runs: the config file itself is not changed.
-function codexLean(home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex")) {
+export function codexLean(home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex")) {
   const out = ["-c", "notify=[]"];
   let toml = "";
   try { toml = fs.readFileSync(path.join(home, "config.toml"), "utf8"); } catch { return out; }
@@ -304,7 +316,7 @@ async function askChatGPTNow(prompt, { newConversation = false, imagePaths = [],
 
 // ---------- ChatGPT usage (counted on this PC; the app server and the MCP server both write here) ----------
 const CHATGPT_USAGE_FILE = path.join(DATA, "usage-chatgpt.jsonl");
-function recordChatGPT(entry) {
+export function recordChatGPT(entry) {
   try { fs.appendFileSync(CHATGPT_USAGE_FILE, JSON.stringify({ t: Date.now(), ...entry }) + "\n"); } catch { /* best-effort */ }
 }
 /** Every recorded ChatGPT call, oldest first: [{ t, kind, ok, ms, in, cached, out, limits }]. */
@@ -729,5 +741,55 @@ export async function generateVideo(description, { model, aspect = "16:9", secon
 }
 
 export function resetConversations() {
-  updateState({ chatgptThread: null, geminiConversation: null, claudeSession: null });
+  updateState({ chatgptThread: null, geminiConversation: null, claudeSession: null, claudeHelperSession: null, chatgptBrainThread: null });
+}
+
+// ---------- what the brain may never touch ----------
+/**
+ * True when a tool's input mentions sign-in data or AI Brain's own keys: the .claude, .codex and
+ * .gemini folders, Discord's data, brain-mcp.json, google-key.json, inspect-key.json. Such a step is
+ * refused whatever the user clicks (used by the approval check and by the ChatGPT brain's file tools).
+ */
+export function forbidden(input) {
+  const all = [];
+  const walk = (v) => { if (typeof v === "string") all.push(v); else if (v && typeof v === "object") Object.values(v).forEach(walk); };
+  walk(input);
+  const t = all.join("\n").toLowerCase().replace(/\\+/g, "/");
+  if (t.includes("discord") && /appdata|leveldb|local storage|token/.test(t)) return true;
+  return /[/~]\.(claude|codex|gemini)\b|brain-mcp\.json|google-key|inspect-key|gemini_api_key|google_api_key/.test(t);
+}
+
+// ---------- Claude as a helper (when ChatGPT is the brain) ----------
+/**
+ * Ask Claude (Claude Code, the user's Claude login) and get its reply. No tools at all: it can only
+ * think and answer. Continues the same conversation unless newConversation is true. Returns { text }.
+ */
+export async function askClaude(prompt, { newConversation = false, signal } = {}) {
+  if (signal?.aborted) throw stopped();
+  if (FAKE_HELPERS) return fakeHelper("Claude", prompt, signal);
+  const state = loadState(), s = loadSettings();
+  const resumeId = !newConversation && state.claudeHelperSession;
+  // --restricted ignores the user's own Claude settings; --tools "" and an empty --strict-mcp-config
+  // leave it with no tools, so it cannot read, change or run anything.
+  const args = ["-p", "--restricted", "--output-format", "json", "--tools", "", "--strict-mcp-config"];
+  if (s.brainModel !== "auto") args.push("--model", s.brainModel);
+  if (resumeId) args.push("--resume", resumeId);
+  let r = await runExe(CLAUDE_EXE, args, { stdin: prompt, signal });
+  if (r.aborted) throw stopped();
+  let j = null;
+  const parse = () => { try { j = JSON.parse(r.stdout.slice(r.stdout.indexOf("{"))); } catch { j = null; } };
+  parse();
+  if (resumeId && (!j || (j.is_error && !j.result))) { // the saved conversation is gone: start a new one once
+    r = await runExe(CLAUDE_EXE, args.slice(0, args.indexOf("--resume")), { stdin: prompt, signal });
+    if (r.aborted) throw stopped();
+    parse();
+  }
+  const reply = String(j?.result ?? "").trim();
+  if (!j || j.is_error || !reply) {
+    const why = (j?.result || r.stderr.trim().split(/\r?\n/).slice(-6).join("\n") || `exit code ${r.code}`).toString();
+    throw new Error(`Claude gave no reply.${/log ?in|auth|401/i.test(why) ? ' Sign in with "claude auth login".' : ""}\n${why}`);
+  }
+  if (j.session_id) updateState({ claudeHelperSession: j.session_id });
+  log("Claude", prompt, reply);
+  return { text: reply };
 }
