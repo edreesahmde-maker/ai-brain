@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-accent="blue" data-density="compact">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Brain</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="station.css">
+</head>
+<body>
+<div id="bg-custom" aria-hidden="true"></div>
+<canvas id="fx" aria-hidden="true"></canvas>
+
+<!-- Icons and emblems (all drawn for this app) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <path id="leaf" d="M0 0C-6-9-19-14-19-26C-19-35-9-39 0-31C9-39 19-35 19-26C19-14 6-9 0 0Z"/>
+    <symbol id="clover3" viewBox="-44 -44 88 88">
+      <use href="#leaf" transform="scale(1.08)"/><use href="#leaf" transform="rotate(120) scale(1.08)"/><use href="#leaf" transform="rotate(240) scale(1.08)"/>
+      <path d="M-1.6 2C-1 14 1 26-3 40L2 41C6 27 3 14 1.6 2Z"/>
+    </symbol>
+    <symbol id="clover4" viewBox="-44 -44 88 88">
+      <use href="#leaf" transform="rotate(45)"/><use href="#leaf" transform="rotate(135)"/><use href="#leaf" transform="rotate(225)"/><use href="#leaf" transform="rotate(315)"/>
+    </symbol>
+    <symbol id="clover5" viewBox="-44 -44 88 88">
+      <use href="#leaf" transform="scale(.86 1)"/><use href="#leaf" transform="rotate(72) scale(.86 1)"/><use href="#leaf" transform="rotate(144) scale(.86 1)"/><use href="#leaf" transform="rotate(216) scale(.86 1)"/><use href="#leaf" transform="rotate(288) scale(.86 1)"/>
+    </symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-3-7-7-1z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="M20 11.5l-8.2 8.2a5 5 0 01-7.1-7.1l8.5-8.5a3.5 3.5 0 015 5l-8.5 8.4a2 2 0 01-2.8-2.8l7.8-7.8"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 16l-5-5-9 9"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 013 3v13H8a3 3 0 01-3-3V4z"/><path d="M5 17a3 3 0 013-3h11"/></symbol>
+    <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M7 4h10v16l-5-4-5 4V4z"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="6.6"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M5.5 18.5l1.8-1.8M16.7 7.3l1.8-1.8"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 114 2c-.9.6-1.5 1.2-1.5 2.3M12 17h.01"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v9M6.3 6.8a8 8 0 1011.4 0"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2"/></symbol>
+    <symbol id="i-speak" viewBox="0 0 24 24"><path d="M4 10v4h3l5 4V6L7 10H4zM16 9a4 4 0 010 6M18.5 6.5a8 8 0 010 11"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0113.7-5.7L20 8.5M20 4v4.5h-4.5M20 12a8 8 0 01-13.7 5.7L4 15.5M4 20v-4.5h4.5"/></symbol>
+    <symbol id="i-max" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20l4-1L19 8l-3-3L5 16l-1 4zM14 7l3 3"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.7l5.9-.8L12 3.5z"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8L11 3zM19 15l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7.7-2z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M3 12s3.5-6.5 9-6.5S21 12 21 12s-3.5 6.5-9 6.5S3 12 3 12z"/><circle cx="12" cy="12" r="2.6"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><path d="M8 11a3 3 0 100-6 3 3 0 000 6zM2.5 19a5.5 5.5 0 0111 0M16 11a2.6 2.6 0 100-5.2M17 14.2a5 5 0 014.5 4.8"/></symbol>
+    <symbol id="mark" viewBox="0 0 100 100"><path fill-rule="evenodd" d="M50 5l39 22.5v45L50 95 11 72.500v-45zm0 12L21.500 33.500v33L50 83l28.500-16.500v-33z"/><circle cx="50" cy="50" r="10"/><path d="M47 19h6v24h-6z"/><path d="M47 19h6v24h-6z" transform="rotate(120 50 50)"/><path d="M47 19h6v24h-6z" transform="rotate(240 50 50)"/></symbol>
+    <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></symbol>
+    <symbol id="i-full" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+    <symbol id="i-layout" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/></symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 18a8.500 8.500 0 1116 0M12 18l4-6"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></symbol>
+    <symbol id="i-bars" viewBox="0 0 24 24"><path d="M5 20V10M12 20V4M19 20v-7"/></symbol>
+    <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V6l11-2v12"/><circle cx="6.500" cy="18" r="2.500"/><circle cx="17.500" cy="16" r="2.500"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.500v15l12-7.500z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path d="M6 5v14l10-7zM18 5v14"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><path d="M18 5v14L8 12zM6 5v14"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M3 7h3.500c4 0 5.500 10 10 10H21M3 17h3.500c1.600 0 2.800-1.500 3.900-3.400M13 8.600C14 7.600 15.100 7 16.500 7H21M18 4l3 3-3 3M18 14l3 3-3 3"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M4 11V9a3 3 0 013-3h12M16 3l3 3-3 3M20 13v2a3 3 0 01-3 3H5M8 21l-3-3 3-3"/></symbol>
+    <symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/></symbol>
+    <symbol id="i-reload" viewBox="0 0 24 24"><path d="M20 11a8 8 0 10-2.300 5.700M20 4v7h-7"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v8a1 1 0 01-1 1h-4v-6H9v6H5a1 1 0 01-1-1z"/></symbol>
+  </defs>
+</svg>
+
+<div id="app">
+  <header id="top">
+    <button class="icon-btn" id="btn-sessions" title="Sessions (Alt+S)" aria-label="Sessions"><svg class="i"><use href="#i-menu"/></svg></button>
+    <div class="brand" aria-label="AI Brain">
+      <svg class="brand-mark"><use href="#mark"/></svg>
+      <span class="brand-name">AI Brain</span>
+    </div>
+    <button id="session-title" title="Rename this session">New session</button>
+    <button class="btn small" id="btn-new" title="Start a new session (Alt+N)"><svg class="i"><use href="#i-plus"/></svg><span>New</span></button>
+    <div class="spacer"></div>
+    <div class="presets" id="presets" role="group" aria-label="Layout">
+      <button type="button" data-preset="focus" title="Only the conversation (Alt+1)">Focus</button>
+      <button type="button" data-preset="station" title="Helpers, activity, usage and music (Alt+2)">Station</button>
+      <button type="button" data-preset="all" title="Every panel at once (Alt+3)">Everything</button>
+      <button type="button" data-preset="social" title="Conversation with Discord and music (Alt+4)">Social</button>
+      <button type="button" data-preset="mine" title="Your saved layout (Alt+5)" hidden>Mine</button>
+    </div>
+    <div class="chips" id="chips">
+      <button class="chip" data-who="claude" title="Claude"><span class="dot"></span><span>Claude</span></button>
+      <button class="chip" data-who="gemini" title="Gemini"><span class="dot"></span><span>Gemini</span></button>
+      <button class="chip" data-who="chatgpt" title="ChatGPT" hidden><span class="dot"></span><span>ChatGPT</span></button>
+    </div>
+    <button class="icon-btn" id="btn-palette" title="Search commands (Ctrl+K)" aria-label="Search commands"><svg class="i"><use href="#i-search"/></svg></button>
+    <button class="icon-btn" id="btn-full" title="Full screen (F11)" aria-label="Full screen"><svg class="i"><use href="#i-full"/></svg></button>
+    <div id="win-gap" aria-hidden="true"></div>
+  </header>
+
+  <div id="offline" hidden>Connection to the app was lost. Trying again…</div>
+
+  <div id="work">
+    <nav id="rail" aria-label="Panels and tools">
+      <div class="rail-group" id="rail-panels"></div>
+      <span class="rail-sep"></span>
+      <button class="icon-btn" id="btn-studio" title="Image Studio (Alt+I)" aria-label="Image Studio"><svg class="i"><use href="#i-spark"/></svg></button>
+      <button class="icon-btn" id="btn-gallery" title="Gallery (Alt+G)" aria-label="Gallery"><svg class="i"><use href="#i-grid"/></svg></button>
+      <button class="icon-btn" id="btn-prompts" title="Prompt library (Alt+P)" aria-label="Prompt library"><svg class="i"><use href="#i-book"/></svg></button>
+      <button class="icon-btn" id="btn-saved" title="Saved answers (Alt+B)" aria-label="Saved answers"><svg class="i"><use href="#i-bookmark"/></svg></button>
+      <div class="spacer"></div>
+      <button class="icon-btn" id="btn-layout" title="Layout: save, reset and presets" aria-label="Layout menu" aria-haspopup="menu"><svg class="i"><use href="#i-layout"/></svg></button>
+      <button class="icon-btn" id="btn-zen" title="Focus mode (Alt+Z)" aria-label="Focus mode"><svg class="i"><use href="#i-eye"/></svg></button>
+      <button class="icon-btn" id="btn-settings" title="Settings (Ctrl+,)" aria-label="Settings"><svg class="i"><use href="#i-gear"/></svg></button>
+      <button class="icon-btn" id="btn-help" title="Help and shortcuts (F1)" aria-label="Help"><svg class="i"><use href="#i-help"/></svg></button>
+      <button class="icon-btn danger" id="btn-quit" title="Quit AI Brain" aria-label="Quit"><svg class="i"><use href="#i-power"/></svg></button>
+    </nav>
+
+    <div class="dock" id="dock-left" data-side="left" aria-label="Left panels"></div>
+    <div class="vsplit" data-side="left" role="separator" aria-orientation="vertical" aria-label="Resize the left panels" tabindex="0"></div>
+
+    <main id="main">
+      <div class="panel" id="stage">
+        <div class="emblem" id="emblem">
+          <span class="ring"></span><span class="ring r2"></span>
+          <svg class="emblem-mark"><use href="#mark"/></svg>
+        </div>
+        <div class="stage-text">
+          <div class="stage-kicker">Claude · the brain</div>
+          <div class="stage-phase" id="phase-label">Ready</div>
+          <div class="stage-sub" id="stage-sub"></div>
+        </div>
+        <button class="btn danger" id="btn-stop" hidden><svg class="i"><use href="#i-stop"/></svg><span>Stop</span></button>
+      </div>
+
+      <section class="panel" id="queue-panel" hidden>
+        <header class="p-head"><div class="p-title"><h2>Waiting tasks</h2></div><span class="count" id="queue-count">0</span></header>
+        <div id="queue"></div>
+      </section>
+
+      <div class="panel" id="thread-panel">
+        <div id="thread" aria-live="polite">
+          <div id="empty">
+            <svg class="empty-mark"><use href="#mark"/></svg>
+            <h1>What should the brain work on?</h1>
+            <p id="empty-sub">Type a task below. Claude plans it, asks Gemini for help when it is useful, and gives you one answer.</p>
+            <div id="ideas"></div>
+          </div>
+        </div>
+        <button id="jump" class="btn small" hidden><svg class="i"><use href="#i-down"/></svg><span>Latest</span></button>
+        <form id="composer">
+          <div id="attachments"></div>
+          <div class="composer-row">
+            <button type="button" class="icon-btn" id="btn-attach" title="Attach files (or drop them anywhere)" aria-label="Attach files"><svg class="i"><use href="#i-clip"/></svg></button>
+            <button type="button" class="icon-btn" id="btn-prompts2" title="Prompt library" aria-label="Prompt library"><svg class="i"><use href="#i-book"/></svg></button>
+            <textarea id="task" rows="1" placeholder="Give the brain a task…  (Enter to send, Shift+Enter for a new line)" aria-label="Task for the brain" dir="auto"></textarea>
+            <button type="submit" class="btn primary" id="btn-send"><svg class="i"><use href="#i-send"/></svg><span id="send-label">Send</span></button>
+          </div>
+          <div class="composer-foot">
+            <span class="foot-label" id="modes-label">Work mode</span>
+            <div class="seg mini" id="modes" role="radiogroup" aria-labelledby="modes-label">
+              <button type="button" role="radio" data-mode="auto" title="Claude decides when to ask the helpers">Auto</button>
+              <button type="button" role="radio" data-mode="solo" title="Claude answers alone – fastest, uses the least of your limits">Solo</button>
+              <button type="button" role="radio" data-mode="team" title="Claude and Gemini each answer, then Claude combines the best of both">Team</button>
+              <button type="button" role="radio" data-mode="debate" title="Gemini argues the other side, then Claude gives a balanced verdict">Debate</button>
+              <button type="button" role="radio" data-mode="extreme" title="Plan, ask the helpers, draft, check the draft for mistakes, then answer – slowest and most careful">Extreme</button>
+            </div>
+            <span class="spacer"></span>
+            <span class="foot-hint" id="mode-hint"></span>
+          </div>
+          <input type="file" id="file-input" multiple hidden>
+        </form>
+      </div>
+    </main>
+
+    <div class="vsplit" data-side="right" role="separator" aria-orientation="vertical" aria-label="Resize the right panels" tabindex="0"></div>
+    <aside class="dock" id="dock-right" data-side="right" aria-label="Right panels"></aside>
+  </div>
+
+  <footer id="status">
+    <button type="button" class="sb-item" id="sb-brain" title="What the brain is doing"><span class="dot" id="sb-dot"></span><span id="sb-phase">Ready</span></button>
+    <button type="button" class="sb-item" id="sb-model" title="Brain model and effort (opens Settings)"></button>
+    <button type="button" class="sb-item usage" id="usage" title="How much of your Claude plan limit is used. Appears after the first task. Click for details.">
+      <span class="usage-row"><span class="usage-label">5h</span><span class="bar"><i id="usage-5h-bar"></i></span><span class="usage-num" id="usage-5h">–</span></span>
+      <span class="usage-row"><span class="usage-label">Week</span><span class="bar"><i id="usage-7d-bar"></i></span><span class="usage-num" id="usage-7d">–</span></span>
+    </button>
+    <button type="button" class="sb-item" id="sb-gemini" title="Gemini requests today, counted on this PC. Click for details.">Gemini –</button>
+    <span class="spacer"></span>
+    <div class="sb-music" id="sb-music" hidden>
+      <button type="button" class="sb-btn" id="sb-prev" title="Previous song" aria-label="Previous song"><svg class="i"><use href="#i-prev"/></svg></button>
+      <button type="button" class="sb-btn" id="sb-toggle" title="Play or pause" aria-label="Play or pause"><svg class="i"><use href="#i-play"/></svg></button>
+      <button type="button" class="sb-btn" id="sb-next" title="Next song" aria-label="Next song"><svg class="i"><use href="#i-next"/></svg></button>
+      <button type="button" class="sb-item" id="sb-track" title="Show the Music panel"></button>
+    </div>
+    <span class="sb-item" id="sb-clock" title=""></span>
+  </footer>
+</div>
+
+<!-- Panels that can be placed in the left or right dock. station.js moves them into place. -->
+<div id="panel-store" hidden>
+  <article class="panel helper dockable" id="p-gemini" data-who="gemini" data-panel="gemini">
+    <header class="p-head">
+      <svg class="glyph"><use href="#clover4"/></svg>
+      <div class="p-title"><h2>Gemini</h2><span class="p-sub" id="gemini-detail">Checking…</span></div>
+      <span class="dot" id="gemini-dot"></span>
+      <button class="icon-btn" data-act="max" title="Make this panel bigger" aria-label="Make this panel bigger"><svg class="i"><use href="#i-max"/></svg></button>
+    </header>
+    <div class="p-log" id="gemini-log"></div>
+    <form class="p-form" data-who="gemini">
+      <textarea rows="1" placeholder="Message Gemini directly…" aria-label="Message Gemini directly" dir="auto"></textarea>
+      <button type="button" class="icon-btn" data-act="studio" title="Make an image (Image Studio)" aria-label="Image Studio"><svg class="i"><use href="#i-image"/></svg></button>
+      <button type="submit" class="icon-btn solid" title="Send" aria-label="Send to Gemini"><svg class="i"><use href="#i-send"/></svg></button>
+    </form>
+  </article>
+
+  <article class="panel helper dockable" id="p-chatgpt" data-who="chatgpt" data-panel="chatgpt">
+    <header class="p-head">
+      <svg class="glyph"><use href="#clover3"/></svg>
+      <div class="p-title"><h2>ChatGPT</h2><span class="p-sub" id="chatgpt-detail">Checking…</span></div>
+      <span class="dot" id="chatgpt-dot"></span>
+      <button class="icon-btn" data-act="max" title="Make this panel bigger" aria-label="Make this panel bigger"><svg class="i"><use href="#i-max"/></svg></button>
+    </header>
+    <div class="p-log" id="chatgpt-log"></div>
+    <form class="p-form" data-who="chatgpt">
+      <textarea rows="1" placeholder="Message ChatGPT directly…" aria-label="Message ChatGPT directly" dir="auto"></textarea>
+      <button type="submit" class="icon-btn solid" title="Send" aria-label="Send to ChatGPT"><svg class="i"><use href="#i-send"/></svg></button>
+    </form>
+  </article>
+
+  <section class="panel dockable" id="activity" data-panel="activity">
+    <header class="p-head"><div class="p-title"><h2>Activity</h2></div>
+      <button class="icon-btn" id="btn-log-clear" title="Clear this list (does not delete anything)" aria-label="Clear activity list"><svg class="i"><use href="#i-trash"/></svg></button>
+    </header>
+    <div id="log"></div>
+  </section>
+
+  <section class="panel dockable" id="usage-panel" data-panel="usage">
+    <header class="p-head"><div class="p-title"><h2>Usage</h2></div>
+      <button class="icon-btn" id="usage-refresh" title="Refresh the numbers" aria-label="Refresh usage"><svg class="i"><use href="#i-reload"/></svg></button>
+    </header>
+    <div class="p-body" id="usage-body">
+      <h3 class="u-h"><span class="who-dot" data-who="claude"></span>Claude<small>your plan limits</small></h3>
+      <div class="meter"><div class="meter-top"><span>5-hour limit</span><b id="um-5h">–</b></div><div class="bar"><i id="um-5h-bar"></i></div><small id="um-5h-note">Shown after the first task</small></div>
+      <div class="meter"><div class="meter-top"><span>Weekly limit</span><b id="um-7d">–</b></div><div class="bar"><i id="um-7d-bar"></i></div><small id="um-7d-note"></small></div>
+      <table class="kv" id="u-claude" aria-label="Claude usage">
+        <thead><tr><th></th><th>Tasks</th><th>Tokens in</th><th>Tokens out</th><th title="What this would cost at pay-per-use prices. It is covered by your subscription.">Value</th></tr></thead>
+        <tbody>
+          <tr data-k="session"><th>This session</th><td>0</td><td>0</td><td>0</td><td>–</td></tr>
+          <tr data-k="today"><th>Today</th><td>0</td><td>0</td><td>0</td><td>–</td></tr>
+          <tr data-k="all"><th>All time</th><td>0</td><td>0</td><td>0</td><td>–</td></tr>
+        </tbody>
+      </table>
+      <p class="u-note" id="u-last"></p>
+      <h3 class="u-h"><span class="who-dot" data-who="gemini"></span>Gemini<small>counted on this PC</small></h3>
+      <table class="kv" id="u-gemini" aria-label="Gemini usage">
+        <thead><tr><th></th><th>Requests</th><th>Failed</th><th>Tokens</th><th>Pictures</th></tr></thead>
+        <tbody>
+          <tr data-k="today"><th>Today</th><td>0</td><td>0</td><td>0</td><td>0</td></tr>
+          <tr data-k="all"><th>All time</th><td>0</td><td>0</td><td>0</td><td>0</td></tr>
+        </tbody>
+      </table>
+      <p class="u-note" id="u-quota"></p>
+      <h3 class="u-h">Tasks per day<small>last 14 days</small></h3>
+      <div class="chart" id="u-chart" role="img" aria-label="Tasks per day for the last 14 days"></div>
+      <div class="chart-tip" id="u-tip" hidden></div>
+    </div>
+  </section>
+
+  <section class="panel dockable" id="stats" data-panel="stats">
+    <header class="p-head"><div class="p-title"><h2>This session</h2></div></header>
+    <div class="tiles">
+      <div class="tile"><b id="st-tasks">0</b><span>Tasks</span></div>
+      <div class="tile"><b id="st-calls">0</b><span>Helpers</span></div>
+      <div class="tile"><b id="st-images">0</b><span>Images</span></div>
+      <div class="tile"><b id="st-avg">–</b><span>Avg. time</span></div>
+    </div>
+  </section>
+
+  <section class="panel dockable" id="recent" data-panel="recent">
+    <header class="p-head"><div class="p-title"><h2>Recent images</h2></div>
+      <button class="btn small" id="btn-gallery2">Gallery</button>
+    </header>
+    <div id="recent-strip"></div>
+  </section>
+
+  <section class="panel dockable" id="music" data-panel="music">
+    <header class="p-head"><div class="p-title"><h2>Music</h2></div>
+      <span class="p-tag" id="music-app"></span>
+      <button class="icon-btn" id="music-open" title="Open Spotify" aria-label="Open Spotify"><svg class="i"><use href="#i-ext"/></svg></button>
+    </header>
+    <div class="p-body music">
+      <div class="m-now">
+        <div class="m-art" id="music-art"><svg class="i"><use href="#i-music"/></svg></div>
+        <div class="m-meta"><b id="music-title" dir="auto">Nothing is playing</b><span id="music-artist" dir="auto">Open Spotify and start a song</span></div>
+      </div>
+      <div class="m-time"><span id="music-pos">0:00</span><input type="range" id="music-seek" min="0" max="100" step="1" value="0" aria-label="Position in the song" disabled><span id="music-dur">0:00</span></div>
+      <div class="m-ctl">
+        <button type="button" class="icon-btn" id="music-shuffle" title="Shuffle" aria-label="Shuffle" aria-pressed="false" disabled><svg class="i"><use href="#i-shuffle"/></svg></button>
+        <button type="button" class="icon-btn" id="music-prev" title="Previous song" aria-label="Previous song" disabled><svg class="i"><use href="#i-prev"/></svg></button>
+        <button type="button" class="icon-btn solid m-play" id="music-toggle" title="Play" aria-label="Play" disabled><svg class="i"><use href="#i-play"/></svg></button>
+        <button type="button" class="icon-btn" id="music-next" title="Next song" aria-label="Next song" disabled><svg class="i"><use href="#i-next"/></svg></button>
+        <button type="button" class="icon-btn" id="music-repeat" title="Repeat" aria-label="Repeat" aria-pressed="false" disabled><svg class="i"><use href="#i-repeat"/></svg></button>
+      </div>
+      <form class="m-search" id="music-search">
+        <div class="search"><svg class="i"><use href="#i-search"/></svg><input type="search" id="music-q" placeholder="Find a song or artist in Spotify…" aria-label="Search in Spotify" maxlength="120"></div>
+      </form>
+    </div>
+  </section>
+
+  <section class="panel dockable" id="discord" data-panel="discord">
+    <header class="p-head"><div class="p-title"><h2>Discord</h2></div>
+      <span class="dc-state" id="discord-state" role="status">Checking…</span>
+      <button type="button" class="icon-btn" id="discord-add" title="Pin a chat" aria-label="Pin a chat" aria-expanded="false" aria-controls="discord-add-form"><svg class="i"><use href="#i-plus"/></svg></button>
+    </header>
+    <div class="p-body dc-body" id="discord-body">
+      <form class="dc-add" id="discord-add-form" hidden>
+        <input type="text" id="discord-add-name" placeholder="Name (for example Sam)" aria-label="Name for this chat" maxlength="40" autocomplete="off" dir="auto">
+        <input type="text" id="discord-add-link" placeholder="Chat link: https://discord.com/channels/…" aria-label="The chat's link from Discord" maxlength="300" autocomplete="off" spellcheck="false">
+        <div class="dc-add-row">
+          <button type="submit" class="btn primary small">Pin chat</button>
+          <button type="button" class="btn small" id="discord-add-cancel">Cancel</button>
+        </div>
+        <small>Paste a link that starts with https://discord.com/channels/ (a link to a message in the chat works too). If a pin opens your friends list instead, the link was not a chat link.</small>
+      </form>
+      <ul class="dc-chats" id="discord-chats" aria-label="Pinned Discord chats"></ul>
+      <div class="p-empty" id="discord-note">
+        <svg class="i big"><use href="#i-chat"/></svg>
+        <b id="discord-note-title">Pin your chats here</b>
+        <p id="discord-note-text">Press + and paste a chat's link. A click on it opens that chat in your Discord app.</p>
+      </div>
+      <div class="dc-actions">
+        <button type="button" class="btn small" id="discord-start">Open the Discord app</button>
+        <button type="button" class="btn small" id="discord-beside" hidden title="Discord on the right, AI Brain on the left">Beside AI Brain</button>
+        <button type="button" class="btn small" id="discord-back" hidden title="Both windows go back where they were">Put the windows back</button>
+      </div>
+      <small class="dc-foot">Chats open in your own Discord app. Discord does not let other apps list your chats, so you pin them here yourself. The AIs cannot read or send your messages.</small>
+    </div>
+  </section>
+</div>
+
+<div class="menu" id="menu" role="menu" hidden></div>
+
+<div id="drop" hidden><div><svg class="i"><use href="#i-clip"/></svg><span>Drop files to attach them to your task</span></div></div>
+<div id="closed" hidden><div><svg class="closed-mark"><use href="#clover5"/></svg><h1>AI Brain is closed</h1><p>Use the “AI Brain” shortcut on your desktop to open it again. You can close this window.</p></div></div>
+<div id="toasts" aria-live="assertive"></div>
+
+<!-- Sessions drawer -->
+<dialog class="dlg drawer" id="dlg-sessions" aria-labelledby="t-sessions">
+  <header class="d-head"><h2 id="t-sessions">Sessions</h2><button class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></header>
+  <div class="d-tools">
+    <div class="search"><svg class="i"><use href="#i-search"/></svg><input type="search" id="sess-q" placeholder="Search sessions…" aria-label="Search sessions"></div>
+    <button class="btn primary small" id="sess-new"><svg class="i"><use href="#i-plus"/></svg><span>New</span></button>
+  </div>
+  <div class="d-body" id="sess-list"></div>
+</dialog>
+
+<!-- Settings -->
+<dialog class="dlg" id="dlg-settings" aria-labelledby="t-settings">
+  <header class="d-head"><h2 id="t-settings">Settings</h2><button class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></header>
+  <div class="d-body settings">
+    <section>
+      <h3>Look</h3>
+      <div class="themes" role="radiogroup" aria-label="Theme">
+        <label class="theme-card" data-t="dark"><input type="radio" name="theme" value="dark"><span class="swatch sw-dark"><svg><use href="#mark"/></svg></span><b>Dark</b><small>Plain, quiet workstation look</small></label>
+        <label class="theme-card" data-t="clover"><input type="radio" name="theme" value="clover"><span class="swatch sw-clover"><svg><use href="#clover5"/></svg></span><b>Black Clover</b><small>Black, gold and crimson grimoire</small></label>
+        <label class="theme-card" data-t="neon"><input type="radio" name="theme" value="neon"><span class="swatch sw-neon"><svg><use href="#clover5"/></svg></span><b>Neon</b><small>Cyan and violet circuit glow</small></label>
+        <label class="theme-card" data-t="demon"><input type="radio" name="theme" value="demon"><span class="swatch sw-demon"><svg><use href="#clover5"/></svg></span><b>Anti-Magic</b><small>Black, blood red and ash</small></label>
+        <label class="theme-card" data-t="wind"><input type="radio" name="theme" value="wind"><span class="swatch sw-wind"><svg><use href="#clover5"/></svg></span><b>Wind Spirit</b><small>Deep green, emerald and silver</small></label>
+      </div>
+      <div class="row"><span>Accent colour<small>Used for buttons and highlights in the Dark theme</small></span>
+        <span class="accents" role="radiogroup" aria-label="Accent colour">
+          <label class="acc" style="--c:#4c8dff" title="Blue"><input type="radio" name="accent" value="blue" aria-label="Blue"></label>
+          <label class="acc" style="--c:#9b7bff" title="Violet"><input type="radio" name="accent" value="violet" aria-label="Violet"></label>
+          <label class="acc" style="--c:#3fb27f" title="Green"><input type="radio" name="accent" value="green" aria-label="Green"></label>
+          <label class="acc" style="--c:#e0a33a" title="Amber"><input type="radio" name="accent" value="amber" aria-label="Amber"></label>
+          <label class="acc" style="--c:#e8607c" title="Rose"><input type="radio" name="accent" value="rose" aria-label="Rose"></label>
+          <label class="acc" style="--c:#c9ced6" title="Grey"><input type="radio" name="accent" value="mono" aria-label="Grey"></label>
+        </span></div>
+      <label class="row"><span>Roomier spacing<small>Off keeps everything compact so more fits on screen</small></span><input type="checkbox" class="switch" id="set-density"></label>
+      <label class="row"><span>24-hour clock<small>The clock in the bottom bar</small></span><input type="checkbox" class="switch" id="set-clock24"></label>
+      <div class="row"><span>Panel layout<small>Drag the edges between panels to resize. Use the panel menus to move or hide them.</small></span><button class="btn small" id="set-layout-reset">Reset layout</button></div>
+      <label class="row"><span>Animations<small>Sparks and glow (fan themes only)</small></span><input type="checkbox" class="switch" id="set-anim"></label>
+      <label class="row"><span>Text size<small id="set-font-val">14 px</small></span><input type="range" id="set-font" min="12" max="18" step="1"></label>
+      <div class="row"><span>Background picture<small id="set-bg-state">None</small></span>
+        <span class="row-btns"><button class="btn small" id="set-bg-pick">Choose…</button><button class="btn small" id="set-bg-remove" hidden>Remove</button></span>
+        <input type="file" id="set-bg-file" accept=".png,.jpg,.jpeg,.webp" hidden>
+      </div>
+      <label class="row" id="row-dim" hidden><span>Darken the picture<small id="set-dim-val">70%</small></span><input type="range" id="set-dim" min="0" max="95" step="5"></label>
+    </section>
+    <section>
+      <h3>The brain (Claude)</h3>
+      <label class="row"><span>Model<small>Smarter models use your Claude limit faster</small></span>
+        <select id="set-model">
+          <option value="auto">Automatic (your Claude default)</option>
+          <option value="fable">Fable – most capable</option>
+          <option value="opus">Opus – very capable</option>
+          <option value="sonnet">Sonnet – balanced</option>
+          <option value="haiku">Haiku – fastest</option>
+        </select></label>
+      <label class="row"><span>Thinking effort<small>Higher is more careful and slower</small></span>
+        <select id="set-effort">
+          <option value="auto">Automatic</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
+        </select></label>
+      <label class="row"><span>File and command access<small id="set-access-note">Read only: Claude can read files but not change anything</small></span>
+        <select id="set-access">
+          <option value="read">Read only</option>
+          <option value="ask">Can change files and run commands (asks you each time)</option>
+        </select></label>
+      <div class="row col" id="row-folders" hidden><span>Folders Claude may work in<small>Besides its own workspace. Each change still needs your click. Commands can reach other places, but you see every one first.</small></span>
+        <ul class="folder-list" id="set-folders"></ul>
+        <span class="row-btns"><button class="btn small" id="set-folder-add">Add folder…</button></span></div>
+    </section>
+    <section>
+      <h3>Answers</h3>
+      <label class="row"><span>Answer length<small>How long Claude's final answers should be</small></span>
+        <select id="set-style"><option value="auto">Automatic</option><option value="short">Short and to the point</option><option value="detailed">Detailed with examples</option></select></label>
+      <label class="row col"><span>Standing instructions<small>Claude follows these in every task, for example "Answer in Arabic" or "I use Windows 11"</small></span>
+        <textarea id="set-instructions" rows="3" maxlength="2000" placeholder="Optional" dir="auto"></textarea></label>
+    </section>
+    <section id="sec-helpers">
+      <h3>Helpers</h3>
+      <label class="row"><span>Gemini model<small>Used for Gemini answers and images</small></span>
+        <select id="set-gemini-model"><option value="auto">Automatic</option></select></label>
+      <label class="row"><span>Use ChatGPT<small id="set-chatgpt-state">Off</small></span><input type="checkbox" class="switch" id="set-chatgpt"></label>
+      <div class="row" id="row-chatgpt-login" hidden><span>ChatGPT sign-in<small>Opens a small window that signs you in through your browser</small></span><button class="btn small" id="set-chatgpt-login">Sign in</button></div>
+    </section>
+    <section>
+      <h3>Alerts</h3>
+      <label class="row"><span>Sound when a task finishes</span><input type="checkbox" class="switch" id="set-sounds"></label>
+      <label class="row"><span>Desktop notification<small>Shown when a task finishes and this window is in the background</small></span><input type="checkbox" class="switch" id="set-notify"></label>
+    </section>
+    <section>
+      <h3>Folders</h3>
+      <div class="folder-btns">
+        <button class="btn small" data-open="media"><svg class="i"><use href="#i-folder"/></svg><span>Images</span></button>
+        <button class="btn small" data-open="uploads"><svg class="i"><use href="#i-folder"/></svg><span>Attachments</span></button>
+        <button class="btn small" data-open="transcripts"><svg class="i"><use href="#i-folder"/></svg><span>Helper transcripts</span></button>
+        <button class="btn small" data-open="data"><svg class="i"><use href="#i-folder"/></svg><span>App data</span></button>
+      </div>
+    </section>
+    <section>
+      <h3>About</h3>
+      <p class="about" id="about">AI Brain</p>
+      <p class="about">Claude is the brain. It talks to your helper AIs through the apps installed on this computer, using your own sign-ins. No API keys. Images are made by Gemini; video and sound are not available.</p>
+      <p class="about">The Black Clover, Anti-Magic and Wind Spirit themes are fan-made looks with original artwork. They are not official.</p>
+    </section>
+  </div>
+</dialog>
+
+<!-- Gallery -->
+<dialog class="dlg wide" id="dlg-gallery" aria-labelledby="t-gallery">
+  <header class="d-head"><h2 id="t-gallery">Gallery</h2><span class="count" id="gal-count">0</span><div class="spacer"></div>
+    <button class="btn small" data-open="media"><svg class="i"><use href="#i-folder"/></svg><span>Open folder</span></button>
+    <button class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></header>
+  <div class="d-body" id="gal-grid"></div>
+</dialog>
+
+<!-- Picture viewer -->
+<dialog class="dlg light" id="dlg-light" aria-label="Picture viewer">
+  <button class="icon-btn light-nav prev" id="light-prev" aria-label="Previous"><svg class="i"><use href="#i-left"/></svg></button>
+  <figure id="light-fig"></figure>
+  <button class="icon-btn light-nav next" id="light-next" aria-label="Next"><svg class="i"><use href="#i-right"/></svg></button>
+  <footer class="light-bar">
+    <span id="light-name"></span><div class="spacer"></div>
+    <button class="btn small" id="light-attach"><svg class="i"><use href="#i-clip"/></svg><span>Use in a task</span></button>
+    <button class="btn small" id="light-copy"><svg class="i"><use href="#i-copy"/></svg><span>Copy image</span></button>
+    <button class="btn small" id="light-path"><svg class="i"><use href="#i-copy"/></svg><span>Copy path</span></button>
+    <a class="btn small" id="light-download"><svg class="i"><use href="#i-download"/></svg><span>Download</span></a>
+    <button class="btn small" id="light-folder"><svg class="i"><use href="#i-folder"/></svg><span>Show in folder</span></button>
+    <button class="btn small danger" id="light-delete"><svg class="i"><use href="#i-trash"/></svg><span>Delete</span></button>
+    <button class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>
+  </footer>
+</dialog>
+
+<!-- Image Studio -->
+<dialog class="dlg" id="dlg-studio" aria-labelledby="t-studio">
+  <header class="d-head"><h2 id="t-studio">Image Studio</h2><button class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></header>
+  <div class="d-body studio">
+    <label class="field-label" for="studio-text">Describe the picture</label>
+    <textarea id="studio-text" rows="4" placeholder="A cozy coffee shop on a rainy evening, warm light in the windows…" dir="auto"></textarea>
+    <div class="field-label">Style</div>
+    <div class="seg" id="studio-styles"></div>
+    <div class="field-label">Shape <small>(Gemini may not always follow it)</small></div>
+    <div class="seg" id="studio-shapes"></div>
+    <label class="row tight"><span>Let Claude improve my description first<small>Uses the brain; usually gives a better picture</small></span><input type="checkbox" class="switch" id="studio-improve"></label>
+    <div id="studio-status" hidden></div>
+    <div id="studio-result"></div>
+  </div>
+  <footer class="d-foot"><small>Pictures are made by Gemini and saved to your Gallery.</small><div class="spacer"></div>
+    <button class="btn" data-close>Close</button>
+    <button class="btn primary" id="studio-go"><svg class="i"><use href="#i-spark"/></svg><span>Create</span></button></footer>
+</dialog>
+
+<!-- Prompt library -->
+<dialog class="dlg wide" id="dlg-prompts" aria-labelledby="t-prompts">
+  <header class="d-head"><h2 id="t-prompts">Prompt library</h2><button class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></header>
+  <div class="d-body prompts">
+    <div class="prompt-cols">
+      <div>
+        <h3>My prompts</h3>
+        <div id="prompts-mine"></div>
+        <form id="prompt-form">
+          <input type="text" id="prompt-title" placeholder="Name (for example: Weekly plan)" maxlength="80" aria-label="Prompt name">
+          <textarea id="prompt-text" rows="4" placeholder="The prompt text…" aria-label="Prompt text" dir="auto"></textarea>
+          <div class="form-btns"><button type="button" class="btn small" id="prompt-cancel" hidden>Cancel</button><button type="submit" class="btn primary small" id="prompt-save">Save prompt</button></div>
+        </form>
+      </div>
+      <div>
+        <h3>Ready-made</h3>
+        <div id="prompts-built"></div>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<!-- Saved answers -->
+<dialog class="dlg wide" id="dlg-saved" aria-labelledby="t-saved">
+  <header class="d-head"><h2 id="t-saved">Saved answers</h2><span class="count" id="saved-count">0</span><div class="spacer"></div><button class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></header>
+  <div class="d-body" id="saved-list"></div>
+</dialog>
+
+<!-- Help -->
+<dialog class="dlg" id="dlg-help" aria-labelledby="t-help">
+  <header class="d-head"><h2 id="t-help">Help</h2><button class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></header>
+  <div class="d-body help">
+    <h3>How it works</h3>
+    <ol>
+      <li>You type a task in the box in the middle.</li>
+      <li>Claude (the brain) decides what to do and asks the helper AIs when it is useful. You can watch every message in the helper panels on the left.</li>
+      <li>Claude checks the answers and gives you one final answer in the middle.</li>
+    </ol>
+    <p>You can also message a helper directly from its panel, or make pictures in the Image Studio. If you send a task while the brain is busy, it waits in line and runs next.</p>
+    <h3>Keyboard shortcuts</h3>
+    <table class="keys">
+      <tr><td><kbd>Enter</kbd></td><td>Send the task</td></tr>
+      <tr><td><kbd>Shift</kbd> + <kbd>Enter</kbd></td><td>New line</td></tr>
+      <tr><td><kbd>↑</kbd> in an empty box</td><td>Bring back your earlier tasks</td></tr>
+      <tr><td><kbd>Ctrl</kbd> + <kbd>K</kbd></td><td>Search every command</td></tr>
+      <tr><td><kbd>Ctrl</kbd> + <kbd>.</kbd></td><td>Stop the brain</td></tr>
+      <tr><td><kbd>Ctrl</kbd> + <kbd>,</kbd></td><td>Settings</td></tr>
+      <tr><td><kbd>/</kbd></td><td>Jump to the task box</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>N</kbd></td><td>New session</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>S</kbd></td><td>Sessions</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>I</kbd></td><td>Image Studio</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>G</kbd></td><td>Gallery</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>P</kbd></td><td>Prompt library</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>B</kbd></td><td>Saved answers</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>Z</kbd></td><td>Focus mode (hide the side panels)</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>T</kbd></td><td>Switch theme</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>5</kbd></td><td>Layouts: Focus, Station, Everything, Social, Mine</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>U</kbd></td><td>Show usage</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>L</kbd></td><td>Show activity</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>M</kbd></td><td>Play or pause the music</td></tr>
+      <tr><td><kbd>Alt</kbd> + <kbd>D</kbd></td><td>Show Discord</td></tr>
+      <tr><td><kbd>F11</kbd></td><td>Full screen</td></tr>
+      <tr><td><kbd>F1</kbd></td><td>This help</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>Close a window or panel</td></tr>
+    </table>
+    <h3>Good to know</h3>
+    <ul>
+      <li>Every task uses your Claude plan limit, and helper calls use your Google plan. The bars in the bottom bar show your Claude limits; the Usage panel shows the details.</li>
+      <li>Work modes (under the task box): <b>Solo</b> is fastest, <b>Team</b> asks Gemini too, <b>Debate</b> has Gemini argue the other side, <b>Extreme</b> plans, drafts and double-checks before answering. Team, Debate and Extreme use more of your limits.</li>
+      <li>Panels: use the buttons on the left edge to show or hide them, drag the edges between them to resize, and use the <b>⋯</b> menu on a panel to move it. Your layout is saved.</li>
+      <li>Music controls Spotify through the Windows media controls. Spotify must be open on this PC. Volume is not available.</li>
+      <li>The Discord panel keeps the chats you pin (press + and paste a chat's link). A click opens that chat in the Discord app installed on this PC, next to AI Brain; "Put the windows back" undoes the layout. Discord does not let other apps list your chats, and the AIs cannot see or send your messages.</li>
+      <li>The app keeps running in the background until you press Quit (the power button).</li>
+      <li>The brain can only read files inside its own workspace folder, such as files you attach.</li>
+    </ul>
+  </div>
+</dialog>
+
+<!-- Command search -->
+<dialog class="dlg palette" id="dlg-palette" aria-label="Search commands">
+  <div class="search big"><svg class="i"><use href="#i-search"/></svg><input type="text" id="pal-q" placeholder="Type a command, a session or a prompt…" aria-label="Search commands" autocomplete="off"></div>
+  <div id="pal-list" role="listbox"></div>
+</dialog>
+
+<!-- Claude asks before it changes a file or runs a command -->
+<dialog class="dlg approve" id="dlg-approve" aria-labelledby="ap-title">
+  <div class="d-body">
+    <div class="ap-head"><svg class="i"><use href="#i-pen"/></svg><h2 id="ap-title">Claude wants to make a change</h2><span class="ap-count" id="ap-count" hidden></span></div>
+    <p class="ap-note" id="ap-note" hidden></p>
+    <div class="ap-row" id="ap-path-row" hidden><span>File</span><code id="ap-path"></code></div>
+    <div class="ap-row"><span>Tool</span><code id="ap-tool"></code></div>
+    <pre class="ap-detail" id="ap-detail" tabindex="0"></pre>
+    <p class="ap-small" id="ap-cwd"></p>
+  </div>
+  <footer class="d-foot">
+    <button class="btn small" id="ap-all" hidden title="Later file writes and edits in this same task go through without asking. Commands still ask.">Allow all file changes for this task</button>
+    <div class="spacer"></div>
+    <button class="btn" id="ap-deny">Deny</button>
+    <button class="btn primary" id="ap-allow">Allow</button>
+  </footer>
+</dialog>
+
+<!-- Confirm and text input -->
+<dialog class="dlg small" id="dlg-confirm" aria-labelledby="confirm-title">
+  <div class="d-body"><h2 id="confirm-title"></h2><p id="confirm-text"></p></div>
+  <footer class="d-foot"><div class="spacer"></div><button class="btn" id="confirm-no">Cancel</button><button class="btn primary" id="confirm-yes">OK</button></footer>
+</dialog>
+<dialog class="dlg small" id="dlg-input" aria-labelledby="input-title">
+  <form method="dialog" id="input-form">
+    <div class="d-body"><h2 id="input-title"></h2><input type="text" id="input-value" maxlength="70" aria-labelledby="input-title"></div>
+    <footer class="d-foot"><div class="spacer"></div><button type="button" class="btn" id="input-no">Cancel</button><button type="submit" class="btn primary">Save</button></footer>
+  </form>
+</dialog>
+
+<script src="vendor/marked.umd.js"></script>
+<script src="vendor/purify.min.js"></script>
+<script src="app.js"></script>
+<script src="station.js"></script>
+</body>
+</html>

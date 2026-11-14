@@ -1,0 +1,17 @@
+# Installed packages
+node_modules/
+
+# Your own data (chats, settings, pictures, logs) - stays on this PC, never in git
+conversations/
+sessions/
+custom/
+workspace/
+settings.json
+state.json
+usage-*.jsonl
+app.log
+brain-mcp.json
+*.log
+
+# Test screenshots (made again by every test run)
+test/shots/

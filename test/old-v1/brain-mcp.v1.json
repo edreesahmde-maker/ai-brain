@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "ai-brain": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\KUBE\\Projects\\ai-brain\\server.mjs"
+      ]
+    }
+  }
+}
