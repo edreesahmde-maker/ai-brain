@@ -6,6 +6,7 @@
 //   [hang]  start answering, never end   [crash] exit with an error before answering
 //   [long]  long Markdown answer         [xss]   answer full of unsafe HTML
 //   [slow]  slower typing              [video] make a video, then answer
+//   [apps]  look at and click in the program in the middle, then answer
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -124,7 +125,14 @@ if (has("change") || has("command") || has("twice")) {
   process.exit(0);
 }
 
-if (has("tool")) {
+if (has("apps")) {
+  await tool("mcp__ai-brain__app_look", {}, "Program: Test program.");
+  await tool("mcp__ai-brain__app_click", { target: 3, count: 2 }, "Double-clicked button \"Press me\".");
+  await tool("mcp__ai-brain__app_type", { text: "hello there" }, "Typed 11 character(s).");
+  const text = "I pressed the button in the program.";
+  await say(text);
+  finish(text);
+} else if (has("tool")) {
   await say("Let me ask Gemini about that.", { thinking: true });
   const r = await tool("mcp__ai-brain__ask_gemini", { prompt: "Give me three ideas for: " + prompt.slice(0, 80) }, "1. First idea\n2. Second idea\n3. Third idea");
   const text = `Gemini suggested three ideas:\n\n${r}\n\nMy pick is the **second** one.`;

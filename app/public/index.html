@@ -133,6 +133,7 @@
         <span class="av-icon" aria-hidden="true"><svg class="i"><use href="#i-window"/></svg></span>
         <b id="av-name" dir="auto">Program</b>
         <span class="av-title" id="av-title" dir="auto"></span>
+        <span class="av-brain" id="av-brain" role="status" hidden title="The brain is using this program with the mouse and keyboard. Move the mouse to take over.">The brain is using it · move the mouse to take over</span>
         <button type="button" class="btn small" id="av-front" title="Bring the program forward to type in it">Use it</button>
         <button type="button" class="btn small" id="av-back" title="The program's window goes back where it was">Put it back</button>
       </header>
@@ -473,6 +474,7 @@
       <div class="row col" id="row-folders" hidden><span>Folders Claude may work in<small id="set-folders-note">Besides its own workspace. Each change still needs your click. Commands can reach other places, but you see every one first.</small></span>
         <ul class="folder-list" id="set-folders"></ul>
         <span class="row-btns"><button class="btn small" id="set-folder-add">Add folder…</button></span></div>
+      <label class="row"><span>Let the brain use the program in the middle<small>Claude can see the program shown in the middle of AI Brain (Blender, an editor, a browser…) and use it with your mouse and keyboard, and open programs from your Apps panel. It can then do anything you could do in that program, so only ask for what you want done. Move the mouse to take over at any time: the brain stops. Only works in the AI Brain desktop window.</small></span><input type="checkbox" class="switch" id="set-apps-brain"></label>
     </section>
     <section>
       <h3>Answers</h3>

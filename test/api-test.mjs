@@ -688,6 +688,7 @@ try {
   await waitFor((e) => e.type === "ready", 3000, from);
 
   await accessTests();
+  await appsTests();
   themeMoveTest();
 } catch (e) {
   failed++;
@@ -698,6 +699,137 @@ try {
   try { fs.rmSync(DATA, { recursive: true, force: true }); } catch {}
 }
 console.log(`\n${passed} passed, ${failed} failed`);
+// The brain uses the program in the middle: setting, key, the relay through the window, its tools.
+async function appsTests() {
+  console.log("the brain uses the program in the middle");
+  const sys = (a) => a.args[a.args.indexOf("--append-system-prompt") + 1];
+  const mcpEnv = () => JSON.parse(fs.readFileSync(path.join(DATA, "brain-mcp.json"), "utf8")).mcpServers["ai-brain"].env;
+  const APP = ["app_open", "app_look", "app_click", "app_type", "app_key", "app_scroll", "app_drag"];
+  ok((await get("/api/settings")).body.appsBrain === false, "it is off by default");
+  let t = await task("Off [tool]");
+  let a = brainArgs().at(-1);
+  ok(!a.args.some((x) => /app_/.test(x)) && !/PROGRAMS \(tools app_open/.test(sys(a)) && mcpEnv().AI_BRAIN_APPS === "0" && !mcpEnv().AI_BRAIN_CONTROL_KEY, "while off the brain has no app tools, no key and no word about them");
+  ok((await post("/api/settings", { appsBrain: "yes" })).body.appsBrain === false, "only true or false is accepted");
+  ok((await post("/api/settings", { appsBrain: true })).body.appsBrain === true, "it can be switched on");
+
+  let from = events.length;
+  await post("/api/task", { text: "Use it [hang]" });
+  await waitFor((e) => e.type === "stream" && e.text.length > 10, 8000, from);
+  a = brainArgs().at(-1);
+  const env = mcpEnv(), key = env.AI_BRAIN_CONTROL_KEY;
+  ok(env.AI_BRAIN_APPS === "1" && /^[0-9a-f]{48}$/.test(key || ""), "a task gets the app tools switched on and a key of its own");
+  ok(APP.every((n) => a.args.includes(`mcp__ai-brain__${n}`)) && /PROGRAMS \(tools app_open/.test(sys(a)) && /If the user moves the mouse, you stop/.test(sys(a)) && /Never type passwords/.test(sys(a)), "the brain is offered the seven app tools and told the rules");
+  const ctl = (body, k = key, headers = H) => post("/api/apps/control", body, { ...headers, ...(k ? { "X-Brain-Key": k } : {}) });
+  ok((await ctl({ cmd: "look" }, "")).status === 403 && (await ctl({ cmd: "look" }, "0".repeat(48))).status === 403, "without the task's key: refused");
+  ok((await ctl({ cmd: "look" }, key, { "Content-Type": "application/json" })).status === 403, "other websites cannot (no AI Brain origin)");
+  ok((await ctl({ cmd: "format-disk" })).status === 400, "unknown steps are refused");
+
+  // A step goes to the window, and the window's answer comes back.
+  from = events.length;
+  const p1 = ctl({ cmd: "click", args: { target: 3, count: 2 } });
+  const ev = await waitFor((e) => e.type === "app-control", 3000, from);
+  ok(!!ev && ev.cmd === "click" && ev.args.target === 3 && ev.args.count === 2 && /^[0-9a-f]{16}$/.test(ev.task || ""), "the step reaches the window with the task's id", JSON.stringify(ev));
+  const pic = "A".repeat(3 * 1024 * 1024);
+  ok((await post("/api/apps/control/answer", { id: ev.id, result: { ok: true, did: "Clicked", image: { data: pic, w: 1, h: 1 } } })).status === 200, "a big picture fits in the answer");
+  const r1 = await p1;
+  ok(r1.status === 200 && r1.body.ok === true && r1.body.did === "Clicked" && r1.body.image.data.length === pic.length, "the window's answer goes back to the brain");
+  ok((await post("/api/apps/control/answer", { id: ev.id, result: { ok: true } })).status === 404, "a second answer to the same step is refused");
+  ok((await post("/api/apps/control/answer", { id: "nope", result: { ok: true } }, { "Content-Type": "application/json" })).status === 403, "other websites cannot answer");
+
+  // A plain browser tab answers no softly: a desktop window's answer still wins...
+  from = events.length;
+  let p = ctl({ cmd: "look" });
+  let e2 = await waitFor((e) => e.type === "app-control", 3000, from);
+  await post("/api/apps/control/answer", { id: e2.id, soft: true, result: { ok: false, why: "no desktop window" } });
+  await sleep(300);
+  await post("/api/apps/control/answer", { id: e2.id, result: { ok: true, did: "desktop" } });
+  ok((await p).body.did === "desktop", "a desktop window's answer wins over a browser tab's no");
+  // ...and when none comes, the no counts after a few seconds.
+  from = events.length;
+  p = ctl({ cmd: "look" });
+  e2 = await waitFor((e) => e.type === "app-control", 3000, from);
+  const t0 = Date.now();
+  await post("/api/apps/control/answer", { id: e2.id, soft: true, result: { ok: false, why: "no desktop window" } });
+  const r3 = await p;
+  ok(r3.body.ok === false && r3.body.why === "no desktop window" && Date.now() - t0 >= 3500, "with only a browser tab, its no counts after a few seconds");
+
+  // The brain's tool server: the picture and the numbered list reach the brain.
+  {
+    const mcp = spawn(process.execPath, [path.join(ROOT, "server.mjs")], { env: { ...process.env, ...env, BRAIN_DATA_DIR: DATA }, stdio: ["pipe", "pipe", "ignore"] });
+    let buf = "";
+    const answer = (id) => new Promise((res, rej) => {
+      const timer = setTimeout(() => rej(new Error("no answer")), 15000);
+      mcp.stdout.on("data", (d) => { buf += d; for (const line of buf.split("\n")) { try { const m = JSON.parse(line); if (m.id === id) { clearTimeout(timer); res(m.result); } } catch { /* partial line */ } } });
+    });
+    const rpc = (m) => mcp.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
+    try {
+      rpc({ id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "api-test", version: "1" } } });
+      await answer(1);
+      rpc({ method: "notifications/initialized" });
+      rpc({ id: 2, method: "tools/list" });
+      const names = ((await answer(2)).tools || []).map((x) => x.name);
+      ok(APP.every((n) => names.includes(n)), "the brain's tool server has the seven app tools", names.join());
+      const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+      from = events.length;
+      rpc({ id: 3, method: "tools/call", params: { name: "app_click", arguments: { target: 2, count: 2 } } });
+      const e3 = await waitFor((e) => e.type === "app-control", 5000, from);
+      ok(e3?.cmd === "click" && e3.args.target === 2 && e3.args.count === 2, "a tool call becomes a step for the window");
+      await post("/api/apps/control/answer", { id: e3.id, result: { ok: true, did: 'Double-clicked button "Press me".', name: "Test program", title: "Test - notes", front: true, complete: true,
+        image: { w: 800, h: 600, data: png, type: "image/png" }, popups: [{ title: "Save as", x: 10, y: 20, w: 300, h: 200 }],
+        items: [{ n: 1, kind: "button", name: "Press me", x: 5, y: 6, w: 70, h: 20 }, { n: 2, kind: "edit", name: "Secret", password: true, x: 5, y: 40, w: 90, h: 20 }, { n: 3, kind: "edit", name: "Notes", value: "hi", x: 5, y: 70, w: 90, h: 20 }] } });
+      const res = await answer(3);
+      const txt = res.content.find((c) => c.type === "text")?.text || "", img = res.content.find((c) => c.type === "image");
+      ok(!res.isError && img?.data === png && img.mimeType === "image/png", "the brain gets the picture");
+      ok(/^Double-clicked button "Press me"\./.test(txt) && /1\. button "Press me" at 5,6 70x20/.test(txt) && /3\. edit "Notes" value="hi"/.test(txt) && /Also open: a window "Save as"/.test(txt), "and the numbered list, what was done and the open dialog", txt);
+      ok(/2\. edit "Secret" \[password box - never type into it\]/.test(txt) && !/hunter/.test(txt), "a password box is marked and its text is never there");
+      from = events.length;
+      rpc({ id: 4, method: "tools/call", params: { name: "app_look", arguments: {} } });
+      const e4 = await waitFor((e) => e.type === "app-control", 5000, from);
+      await post("/api/apps/control/answer", { id: e4.id, result: { ok: false, why: "The user moved the mouse, so you stopped using the program." } });
+      const res4 = await answer(4);
+      ok(res4.isError && /moved the mouse/.test(res4.content[0].text), "a refusal reaches the brain as an error with the reason");
+    } catch (e) { failed++; console.log("  FAIL app tool server: " + e.message); }
+    mcp.kill();
+    const off = spawn(process.execPath, [path.join(ROOT, "server.mjs")], { env: { ...process.env, ...env, AI_BRAIN_APPS: "0", BRAIN_DATA_DIR: DATA }, stdio: ["pipe", "pipe", "ignore"] });
+    let ob = "";
+    const offNames = await new Promise((res) => {
+      const timer = setTimeout(() => res(null), 15000);
+      off.stdout.on("data", (d) => { ob += d; for (const line of ob.split("\n")) { try { const m = JSON.parse(line); if (m.id === 2) { clearTimeout(timer); res((m.result.tools || []).map((x) => x.name)); } } catch { /* partial */ } } });
+      off.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "api-test", version: "1" } } }) + "\n");
+      off.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+      off.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n");
+    });
+    off.kill();
+    ok(Array.isArray(offNames) && !offNames.some((n) => n.startsWith("app_")), "with the setting off the tool server has none of them", String(offNames));
+  }
+
+  // Switching it off ends a waiting step and refuses new ones.
+  from = events.length;
+  p = ctl({ cmd: "look" });
+  await waitFor((e) => e.type === "app-control", 3000, from);
+  await post("/api/settings", { appsBrain: false });
+  const r4 = await p;
+  ok(r4.body.ok === false && /switched off/.test(r4.body.why), "switching the setting off ends a waiting step");
+  ok(/switched off/.test((await ctl({ cmd: "look" })).body.why || ""), "and new steps are refused");
+  await post("/api/settings", { appsBrain: true });
+  // Stop ends a waiting step, and the key dies with the task.
+  from = events.length;
+  p = ctl({ cmd: "look" });
+  await waitFor((e) => e.type === "app-control", 3000, from);
+  await post("/api/stop");
+  const r5 = await p;
+  ok(r5.body.ok === false && /Stop/.test(r5.body.why), "Stop ends a waiting step");
+  await waitFor((e) => e.type === "busy" && e.value === false, 8000, from);
+  ok((await ctl({ cmd: "look" })).status === 403, "after the task its key no longer works");
+
+  // The log says what the brain did in the program; the steps are not shown as helper calls.
+  t = await task("Press it [apps]");
+  ok(t.slice.some((e) => e.type === "log" && e.text === "Program: look") && t.slice.some((e) => e.type === "log" && e.text === "Program: double-click #3") && t.slice.some((e) => e.type === "log" && e.text === 'Program: type "hello there"'), "the log shows each step in the program");
+  ok(!t.slice.some((e) => e.type === "call"), "steps are not shown as helper calls");
+  ok(t.fin && !t.fin.isError, "the task finishes normally");
+  await post("/api/settings", { appsBrain: false });
+}
+
 // A saved theme that was removed in 3.1 (the three Black Clover ones) opens as Berserk.
 function themeMoveTest() {
   console.log("removed themes");

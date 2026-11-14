@@ -708,6 +708,7 @@
     fillGeminiModels();
     $("#set-chatgpt").checked = !!s.chatgptEnabled;
     $("#set-flow-brain").checked = !!s.flowBrain;
+    $("#set-apps-brain").checked = !!s.appsBrain;
     $("#set-sounds").checked = !!s.sounds;
     $("#set-notify").checked = !!s.notify;
     for (const r of $$('input[name="accent"]')) r.checked = r.value === s.accent;
@@ -762,6 +763,7 @@
   $("#set-sounds").addEventListener("change", (e) => { saveSetting({ sounds: e.target.checked }); if (e.target.checked) { S.settings.sounds = true; chime(true); } });
   $("#set-chatgpt").addEventListener("change", async (e) => { await saveSetting({ chatgptEnabled: e.target.checked }); refreshStatus(true); });
   $("#set-flow-brain").addEventListener("change", (e) => saveSetting({ flowBrain: e.target.checked }));
+  $("#set-apps-brain").addEventListener("change", (e) => saveSetting({ appsBrain: e.target.checked }));
   $("#set-video-model").addEventListener("change", (e) => saveSetting({ videoModel: e.target.value }));
   $("#set-video-limit").addEventListener("change", (e) => {
     const n = Math.round(Number(e.target.value));
@@ -1810,6 +1812,7 @@
       case "usage": paintUsage(ev); break;
       case "media": loadMedia(); break;
       case "flow-open": if (window.Station?.hasShell?.()) window.Station.openFlow(true); break;
+      case "app-control": window.Station?.control?.(ev); break;
       case "sessions": loadSessionsSoon(); break;
       case "settings": applySettings(ev.settings); break;
       case "title": S.session.title = ev.title || ""; paintTitle(); break;

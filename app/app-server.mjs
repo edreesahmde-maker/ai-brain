@@ -57,10 +57,14 @@ const CLAUDE_EXE = findClaude();
 const MCP_CFG = path.join(DATA, "brain-mcp.json");
 // key = the one-task key that lets the approve tool ask the user (only while access is "ask" or "auto").
 // It can only ASK; the answer always comes from a click in the window.
+// ctlKey = the one-task key that lets the brain's app_ tools use the program in the middle (only
+// while "Let the brain use the program in the middle" is on). It ends with the task.
+let ctlKey = null, ctlTask = "";
 function writeMcpConfig(s = loadSettings(), key = null) {
-  const env = { AI_BRAIN_CHATGPT: s.chatgptEnabled ? "1" : "0", BRAIN_DATA_DIR: DATA, AI_BRAIN_FLOW: s.flowBrain ? "1" : "0", AI_BRAIN_APP_URL: `http://${HOST}:${PORT}` };
+  const env = { AI_BRAIN_CHATGPT: s.chatgptEnabled ? "1" : "0", BRAIN_DATA_DIR: DATA, AI_BRAIN_FLOW: s.flowBrain ? "1" : "0", AI_BRAIN_APPS: s.appsBrain && ctlKey ? "1" : "0", AI_BRAIN_APP_URL: `http://${HOST}:${PORT}` };
   for (const k of ["BRAIN_FLOW_PORT", "BRAIN_FLOW_ORIGIN"]) if (process.env[k]) env[k] = process.env[k];
   if (key) Object.assign(env, { AI_BRAIN_APPROVE_URL: `http://${HOST}:${PORT}/api/approval/ask`, AI_BRAIN_APPROVE_KEY: key });
+  if (s.appsBrain && ctlKey) env.AI_BRAIN_CONTROL_KEY = ctlKey;
   writeJson(MCP_CFG, { mcpServers: { "ai-brain": { command: process.execPath, args: [path.join(ROOT, "server.mjs")], env } } });
 }
 
@@ -83,10 +87,11 @@ function folderProblem(f) {
 const usableFolders = (s) => [...new Set(s.folders.map((f) => path.resolve(f)))].filter((f) => !folderProblem(f));
 const HELPER_TOOLS = new Set(["ask_gemini", "ask_chatgpt", "ask_both", "generate_image", "generate_video", "flow_make_video", "flow_save_videos"]);
 const FLOW_TOOLS = ["flow_make_video", "flow_look", "flow_click", "flow_type", "flow_wait", "flow_save_videos"];
+const APP_TOOLS = ["app_open", "app_look", "app_click", "app_type", "app_key", "app_scroll", "app_drag"];
 const ASK_RULES = JSON.stringify({ permissions: { ask: ["PowerShell", "Bash", "Write", "Edit", "NotebookEdit"] } });
 const brainTools = (s) =>
   [...(s.chatgptEnabled ? ["ask_chatgpt", "ask_gemini", "ask_both", "generate_image"] : ["ask_gemini", "generate_image"]),
-    ...(googleKeyState().connected ? ["generate_video"] : []), ...(s.flowBrain ? FLOW_TOOLS : [])].map((t) => `mcp__ai-brain__${t}`);
+    ...(googleKeyState().connected ? ["generate_video"] : []), ...(s.flowBrain ? FLOW_TOOLS : []), ...(s.appsBrain ? APP_TOOLS : [])].map((t) => `mcp__ai-brain__${t}`);
 const videoName = (id) => VIDEO_MODELS.find((m) => m.id === id)?.label.replace(/ \(.*/, "") || String(id).replace(/^models\//, "");
 
 function systemPrompt(s) {
@@ -96,6 +101,12 @@ function systemPrompt(s) {
   if (googleKeyState().connected) lines.push(`- VIDEO (tool generate_video) - Google ${videoName(s.videoModel)} makes one short clip (about 8 seconds, with sound) from a description. It costs the user money for every clip and takes a few minutes. Use it only when the user asks for a video, and make exactly as many clips as they asked for (one unless they say otherwise). Write a rich prompt: subject, action, camera movement, style, lighting, sounds. Never retry a failed video more than once.`);
   else if (!s.flowBrain) lines.push("- Video is not connected: if the user asks for a video, tell them to add their Google API key in Settings > Video (or to open Google Flow from the Apps panel).");
   if (s.flowBrain) lines.push(`- GOOGLE FLOW (tools flow_make_video, flow_look, flow_click, flow_type, flow_wait, flow_save_videos) - Google's video maker (Veo 3.1) in a window inside AI Brain, using the user's own Google plan (no API key; it uses their Flow credits). ${googleKeyState().connected ? "Prefer generate_video; use Flow when the user asks for Flow or when generate_video fails." : "Use it when the user asks for a video."} Start with flow_make_video (one call per video). If it reports a problem, use flow_look to read the page, then flow_click / flow_type / flow_wait / flow_save_videos like a person would. If Flow asks the user to sign in or to accept something, stop and tell the user. Make only as many videos as the user asked for. You cannot watch the saved video: say what you asked Flow for, never describe sounds or details as if you had seen them.`);
+  if (s.appsBrain) lines.push([
+    "- PROGRAMS (tools app_open, app_look, app_click, app_type, app_key, app_scroll, app_drag) - you can USE the program shown in the middle of AI Brain (Blender, a text editor, a browser, a game engine...) with the real mouse and keyboard, like a person sitting at the computer.",
+    "  app_look gives a picture of the program and a numbered list of the buttons, menus, boxes and other things on it (positions are picture pixels). app_open opens one of the programs the user added to the Apps panel. Every click, typing, key, scroll or drag shows you a new picture, so check that each step did what you expected before the next one.",
+    "  Click by the number from the list when the thing is listed; otherwise use x and y in the picture. Some programs (Blender, games, 3D and drawing tools) draw everything themselves and list almost nothing: use the picture and their keyboard shortcuts then.",
+    "  Rules: use the program only for what the user asked. Never type passwords or sign in for the user, never buy, pay, send messages or post anything, and never delete, close without saving or overwrite the user's work unless the user asked for exactly that; when the program asks about any of those, stop and ask the user. If the user moves the mouse, you stop: the user is taking over; say what you did and what is left. Work in clear steps and tell the user briefly what you did in the program.",
+  ].join("\n"));
   if (s.chatgptEnabled) {
     lines.push("How to work: decide what each helper is best at, delegate sub-tasks (in parallel with ask_both when useful), compare and combine their answers, check their work, and give the user one clear final answer.");
     lines.push("If a helper fails (for example it is not signed in), carry on with the other one and tell the user briefly.");
@@ -443,6 +454,46 @@ function askApproval(body) {
   });
   return a;
 }
+// ---------- the brain uses the program in the middle ("Let the brain use the program in the middle") ----------
+// The brain's app_ tools post each step to /api/apps/control with the task's key and wait. The step
+// goes to the page (SSE "app-control"), the desktop window does it, and the page posts the answer to
+// /api/apps/control/answer. A plain browser tab answers "no" softly: that only counts when no desktop
+// window answers within a few seconds. Stop, the task ending or the setting going off ends every step.
+const CONTROL_CMDS = new Set(["state", "open", "look", "click", "type", "key", "scroll", "drag"]);
+const CONTROL_MS = Number(process.env.BRAIN_CONTROL_MS || 60_000);
+const controls = new Map(); // id -> { id, resolve, timer, soft }
+function finishControl(c, result) {
+  if (!controls.has(c.id)) return;
+  controls.delete(c.id);
+  clearTimeout(c.timer); clearTimeout(c.softTimer);
+  c.resolve(result);
+}
+function endControls(why) { for (const c of [...controls.values()]) finishControl(c, { ok: false, why: `Stopped: ${why}.` }); }
+function askControl(cmd, args) {
+  return new Promise((resolve) => {
+    if (!clients.size) return resolve({ ok: false, why: "The AI Brain window is not open, so no program can be used." });
+    const c = { id: newId(), resolve, soft: null };
+    controls.set(c.id, c);
+    // Opening a big program can take a while (Blender, Godot).
+    c.timer = setTimeout(() => finishControl(c, { ok: false, why: "AI Brain's window did not answer in time." }), cmd === "open" ? Math.max(CONTROL_MS, 120_000) : CONTROL_MS);
+    send({ type: "app-control", id: c.id, cmd, args, task: ctlTask });
+  });
+}
+function controlLine(tool, a) {
+  const at = a.target !== undefined ? `#${a.target}` : a.x !== undefined ? `(${a.x}, ${a.y})` : "";
+  const clip = (t) => { const s = String(t ?? "").replace(/\s+/g, " "); return s.length > 80 ? `${s.slice(0, 80)}…` : s; };
+  switch (tool) {
+    case "app_open": return `open ${clip(a.name)}`;
+    case "app_look": return "look";
+    case "app_click": return `${a.count === 2 ? "double-click" : a.button === "right" ? "right-click" : a.button === "none" ? "move to" : "click"} ${at}`;
+    case "app_type": return `type "${clip(a.text)}"`;
+    case "app_key": return `press ${clip(a.keys)}${a.times > 1 ? ` x${a.times}` : ""}`;
+    case "app_scroll": return `scroll ${a.amount > 0 ? "up" : "down"} ${Math.abs(Number(a.amount) || 0)} at ${at}`;
+    case "app_drag": return `drag ${a.from_target !== undefined ? `#${a.from_target}` : `(${a.from_x}, ${a.from_y})`} to ${a.to_target !== undefined ? `#${a.to_target}` : `(${a.to_x}, ${a.to_y})`}`;
+    default: return tool;
+  }
+}
+
 // When the last window closes, give it a moment (a reload) and then say no to anything still waiting.
 let noWindowTimer = null;
 function windowsChanged() {
@@ -460,6 +511,10 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
   if (files.length) prompt += `\n\nAttached files:\n${files.join("\n")}`;
   if (mode !== "auto") prompt += `\n\n[${MODES[mode]}]`;
 
+  // The program in the middle: a new key (and a new task id, so the window starts fresh) for this task only.
+  endControls("a new task started");
+  ctlKey = s.appsBrain ? crypto.randomBytes(24).toString("hex") : null;
+  ctlTask = crypto.randomBytes(8).toString("hex");
   // access "ask" or "auto": a new key for this task only; old keys stop working.
   const ask = s.access === "ask" || s.access === "auto";
   runKey = ask ? crypto.randomBytes(24).toString("hex") : null;
@@ -536,6 +591,7 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
           live = ""; pushStream(true);
           const tool = String(c.name).replace("mcp__ai-brain__", "");
           if (tool === "Read") { emit({ type: "log", level: "info", text: `Reading file ${c.input?.file_path || ""}` }); continue; }
+          if (tool.startsWith("app_")) { emit({ type: "log", level: "info", text: `Program: ${controlLine(tool, c.input || {})}` }); continue; }
           if (!HELPER_TOOLS.has(tool)) { // its own tools (files, search, commands): a line in the log
             const what = c.input?.command || c.input?.file_path || c.input?.pattern || "";
             emit({ type: "log", level: "info", text: `${tool}${what ? `: ${String(what).replace(/\s+/g, " ").slice(0, 160)}` : ""}` });
@@ -622,6 +678,8 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
     clearTimeout(timer);
     if (buf.trim()) handle(buf.trim());
     brain = null;
+    ctlKey = null;
+    endControls("the task ended");
     runKey = null; allowFilesThisRun = false;
     denyAllApprovals("the task ended");
     live = ""; pushStream(true);
@@ -921,10 +979,35 @@ const server = http.createServer(async (req, res) => {
       }
 
       let body;
-      try { body = JSON.parse((await readBody(req, 2 * 1024 * 1024)).toString() || "{}"); }
+      // A picture of the program comes back with the answer to a step: allow more for that one.
+      try { body = JSON.parse((await readBody(req, (p === "/api/apps/control/answer" ? 16 : 2) * 1024 * 1024)).toString() || "{}"); }
       catch (e) { if (e instanceof HttpError) throw e; return json(res, 400, { error: "Bad request" }); }
       if (!body || typeof body !== "object") return json(res, 400, { error: "Bad request" });
 
+      if (p === "/api/apps/control") { // from the brain's app_ tools; waits for the desktop window
+        const key = String(req.headers["x-brain-key"] || "");
+        const ok = !!ctlKey && !!brain && key.length === ctlKey.length && crypto.timingSafeEqual(Buffer.from(key), Buffer.from(ctlKey));
+        if (!ok) return json(res, 403, { ok: false, why: "Not allowed: wrong key, or no task is running." });
+        if (!loadSettings().appsBrain) return json(res, 200, { ok: false, why: "The user switched off \"Let the brain use the program in the middle\" in Settings." });
+        const cmd = String(body.cmd || "");
+        if (!CONTROL_CMDS.has(cmd)) return json(res, 400, { ok: false, why: "Unknown step." });
+        const args = body.args && typeof body.args === "object" && !Array.isArray(body.args) ? body.args : {};
+        let gone = false;
+        res.on("close", () => { gone = !res.writableEnded; });
+        const r = await askControl(cmd, args);
+        if (gone) return;
+        return json(res, 200, r && typeof r === "object" ? r : { ok: false, why: "no answer" });
+      }
+      if (p === "/api/apps/control/answer") { // from the page; the first real answer wins
+        const c = controls.get(String(body.id || ""));
+        if (!c) return json(res, 404, { error: "That step was already answered or has ended." });
+        const result = body.result && typeof body.result === "object" ? body.result : { ok: false, why: "no answer" };
+        if (body.soft === true) {
+          // A window that cannot do it: wait a little for one that can.
+          if (!c.soft) { c.soft = result; c.softTimer = setTimeout(() => finishControl(c, c.soft), 4000); }
+        } else finishControl(c, result);
+        return json(res, 200, { ok: true });
+      }
       if (p === "/api/approval/ask") { // from the brain's approve tool; waits for the user's click
         const key = String(req.headers["x-brain-key"] || "");
         const ok = !!runKey && key.length === runKey.length && crypto.timingSafeEqual(Buffer.from(key), Buffer.from(runKey));
@@ -1019,6 +1102,7 @@ const server = http.createServer(async (req, res) => {
       if (p === "/api/stop") {
         if (queue.length) { queue = []; sendQueue(); }
         denyAllApprovals("you pressed Stop");
+        endControls("the user pressed Stop");
         if (brain) { stoppedByUser = true; emit({ type: "log", level: "warn", text: "Stopped by you." }); killTree(brain); }
         return json(res, 200, { ok: true });
       }
@@ -1083,6 +1167,7 @@ const server = http.createServer(async (req, res) => {
         const settings = saveSettings(body);
         if (settings.access === "auto") { for (const a of [...approvals.values()]) finishApproval(a, true, "always allow was switched on"); }
         else if (settings.access !== "ask") denyAllApprovals("file and command access was switched off");
+        if (!settings.appsBrain) endControls("the user switched off \"Let the brain use the program in the middle\"");
         if (body.customBg === null) for (const f of fs.readdirSync(CUSTOM)) { try { fs.unlinkSync(path.join(CUSTOM, f)); } catch {} }
         writeMcpConfig(settings);
         statusAt = 0;

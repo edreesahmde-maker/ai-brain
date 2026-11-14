@@ -1,15 +1,42 @@
-# AI Brain - where we left off (2026-11-13)
+# AI Brain - where we left off (2026-11-14)
 
 Version 3.1.0. Start it with the "AI Brain" desktop shortcut, or `powershell -File launch.ps1`.
 Server on http://127.0.0.1:4777, desktop window = Electron (`shell/main.cjs`).
-The work below (2026-11-13, all sessions) is NOT committed yet.
+On GitHub (private): https://github.com/edreesahmde-maker/ai-brain (branch master).
+
+## Done on 2026-11-14: the brain can USE the program in the middle (mouse + keyboard)
+- Setting `appsBrain` (default OFF): Settings > The brain > "Let the brain use the program in the middle".
+- Brain tools (server.mjs, only with the setting on): app_open (a program pinned in the Apps panel), app_look,
+  app_click, app_type, app_key, app_scroll, app_drag. Every step answers with a PNG picture of the program
+  (MCP image content) + a numbered list from Windows UI Automation (buttons, boxes, list items...; positions in
+  picture pixels). Click by number or by x/y. Programs that draw themselves (Blender, games) list ~nothing:
+  the brain uses the picture and shortcuts. System prompt section "PROGRAMS" has the rules (no passwords,
+  no buying/sending/deleting unless asked, stop when the user moves the mouse).
+- Path of one step: tool -> POST /api/apps/control (header X-Brain-Key = per-task key `ctlKey`, env
+  AI_BRAIN_CONTROL_KEY; dies with the task) -> SSE `app-control` -> page `Station.control` ->
+  `station.apps('control')` (preload whitelists the fields) -> main.cjs `brainControl` -> `shell/app-control.cs`
+  (compiled once like app-dock.cs, one run per step) -> answer POST /api/apps/control/answer (16 MB limit).
+  A plain browser tab answers "no" softly (counts only if no desktop window answers within 4 s).
+  Stop, the task ending, a new task and switching the setting off end waiting steps.
+- Safety in app-control.cs/main.cjs: only the docked window's process; refuses when another program's window
+  covers the spot ("covered"), when the program cannot come to the front, when the window moved since the
+  last picture (look again), keys that leave the program (Win, Alt+Tab, Alt+Esc, Ctrl+Esc, Ctrl+Alt+Del);
+  password boxes are never read. If the mouse is not where the brain left it, the USER moved it: the brain
+  stops for the rest of that task (badge off, toast). The page shows a pulsing badge "The brain is using it".
+- UI Automation clipping: rows scrolled out of a list/tree/table/document are dropped (WinForms reports them
+  as on screen).
+- Test window: `test/fixture-app.cs` (built by shell-test.mjs) writes every click/key/scroll/drag to a JSON file.
+- NOT yet tried with the real Claude on a real program (Blender etc.). The tools and the whole path are tested
+  with the fake Claude and the test window.
 
 ## Tests
-- `node test/api-test.mjs`    -> 226 passed, 0 failed
+- `node test/api-test.mjs`    -> 256 passed, 0 failed (30 new: app control setting, key, relay, tool server)
 - `node test/ui-test.mjs`     -> 487 passed, 0 failed (about 6 minutes)
-- `node test/shell-test.mjs`  -> 35 passed, 0 failed (real desktop window against a test server; Google Flow
+- `node test/shell-test.mjs`  -> 62 passed, 0 failed (real desktop window against a test server; Google Flow
   with a local test page in an empty browser profile, incl. switching to "open only to sign in" and back;
-  System Information docking; the "older server" stubs).
+  System Information docking; the "older server" stubs; 27 new: the brain uses the test window - open, look,
+  click, type, keys, scroll, double/right click, drag, covered spot, window moved, user takes over, and the whole
+  way server -> page -> window). It moves the real mouse: do not touch it while it runs.
   With Blender: `BRAIN_SHELL_APP_EXE="C:\Program Files\Blender Foundation\Blender 5.3\blender-launcher.exe" node test/shell-test.mjs` -> 32 passed (before the 2 sign-in switch checks were added).
 - `node test/flow-test.mjs`   -> 26 passed, 0 failed (the brain's Flow tools against a FAKE Flow page, in a test
   browser with a temporary profile; also checks another site is never touched and the MCP tool list on/off).

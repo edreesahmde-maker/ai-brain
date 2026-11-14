@@ -1420,8 +1420,38 @@
     else if (m.ev === "closed") { AP.docked = null; toast(`${m.name || "The program"} was closed.`); }
     else if (m.ev === "moved-away") { AP.docked = null; toast(`${m.name || "The program"} was moved out of AI Brain. It stays where you put it.`, "", 6000); }
     else if (m.ev === "released") AP.docked = null;
+    else if (m.ev === "brain-control") { brainUsing(m); return; }
     paintApps();
   });
+
+  // ---------- the brain uses the program in the middle ----------
+  // The server passes each step the brain asks for (look, click, type...) here; the desktop window
+  // does it and the answer goes back. The page never picks the program: it is always the one in the middle.
+  let brainTimer = 0;
+  function brainUsing(m) {
+    clearTimeout(brainTimer);
+    const badge = $("#av-brain");
+    if (m.on) {
+      badge.hidden = false;
+      // Hidden again a little after the last step.
+      brainTimer = setTimeout(() => { badge.hidden = true; }, 15000);
+    } else {
+      badge.hidden = true;
+      if (m.why === "user") toast("You moved the mouse, so the brain stopped using the program. It is yours again.", "", 6000);
+    }
+  }
+  async function control(ev) {
+    const answer = (result, soft = false) => fetch("/api/apps/control/answer", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: ev.id, soft, result }),
+    }).catch(() => {});
+    // A plain browser tab cannot do it; its "no" only counts if no desktop window answers.
+    if (!shell?.apps) return answer({ ok: false, why: "AI Brain's desktop window is not open, and the brain can only use programs there. Ask the user to open AI Brain from its desktop shortcut." }, true);
+    let r;
+    try { r = await shell.apps("control", { cmd: ev.cmd, task: ev.task, args: ev.args }); }
+    catch (e) { r = { ok: false, why: String(e?.message || e) }; }
+    if (ev.cmd === "open") await refreshApps();
+    return answer(r || { ok: false, why: "no answer" });
+  }
 
   // Keep the program on the slot, and behind AI Brain while a dialog, menu or big panel is open.
   new ResizeObserver(slotSoon).observe($("#av-slot"));
@@ -1470,7 +1500,7 @@
   // ---------- hooks called from app.js ----------
   let firstSettings = true;
   window.Station = {
-    preset, saveMine, show, hide, fullscreen, appBack, setFloat, move, moveSide, openFlow, hasShell: () => !!shell?.apps,
+    preset, saveMine, show, hide, fullscreen, appBack, setFloat, move, moveSide, openFlow, control, hasShell: () => !!shell?.apps,
     // For tests and the palette: the layout tree and where everything is drawn (pixels inside #tiles).
     layout: () => ({ root: clone(L.root), rects: clone(RECTS), splits: SPLITS.map((s) => ({ x: s.x, y: s.y, w: s.w, h: s.h, horiz: s.horiz, off: s.off })), float: !!L.float, preset: L.preset, collapsed: [...L.collapsed], saved: clone(L) }),
     mode: (m) => setMode(m),

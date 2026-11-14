@@ -500,7 +500,7 @@ const biggest = (list) => list.slice().sort((a, b) => (b.min ? 0 : b.w * b.h) - 
 async function dockWindow(hwnd, name, pinId) {
   const r = await dockCmd("dock", hwnd);
   if (!r.ok) return r;
-  docked = { hwnd: r.hwnd, name: name || niceName(r.exe), exe: r.exe, pinId: pinId || "", title: r.title };
+  docked = { hwnd: r.hwnd, pid: r.pid, name: name || niceName(r.exe), exe: r.exe, pinId: pinId || "", title: r.title };
   try { fs.writeFileSync(DOCKED_FILE(), JSON.stringify({ hwnd: r.hwnd, exe: r.exe, before: r.before })); } catch { /* not important */ }
   if (pinId && r.exe) {
     // Remember the exe that really showed the window, so a running copy is found next time.
@@ -671,10 +671,196 @@ async function putBackAfterCrash() {
   if (w) { const b = rec.before; await dockCmd("put", rec.hwnd, b.show, b.l, b.t, b.r, b.b); }
 }
 
+// ---------- the brain uses the program in the middle (setting "Let the brain use the program") ----------
+// app-control.cs takes a picture of the docked program with a numbered list of what is on it, and
+// clicks, types, scrolls and drags in it. Only the docked program is ever touched (its window and
+// process are checked on every step). If you move the mouse while the brain is working, the brain
+// stops using the program for the rest of that task: you are taking over.
+// Requests come from the brain's tools through the server and the page ("control"); the page only
+// passes them on, it cannot name a window or a program file.
+const CTL_SRC = path.join(__dirname, "app-control.cs");
+const NETFX = path.dirname(CSC);
+const CTL_REFS = ["System.Drawing.dll", "WPF\\UIAutomationClient.dll", "WPF\\UIAutomationTypes.dll", "WPF\\WindowsBase.dll"].map((r) => `-r:${path.join(NETFX, r)}`);
+const SKIP_POS = -99999;
+let ctl = { task: "", hwnd: 0, cursor: null, stopped: "", look: null, busy: false };
+
+function controlExe() {
+  const src = fs.readFileSync(CTL_SRC);
+  const tag = require("node:crypto").createHash("sha1").update(src).digest("hex").slice(0, 10);
+  const dir = path.join(app.getPath("userData"), "helpers");
+  const exe = path.join(dir, `app-control-${tag}.exe`);
+  if (fs.existsSync(exe)) return exe;
+  fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(CSC)) throw new Error("The C# compiler that comes with Windows (.NET Framework 4) was not found.");
+  execFileSync(CSC, ["-nologo", "-optimize", "-target:exe", `-out:${exe}`, ...CTL_REFS, CTL_SRC], { windowsHide: true, timeout: 60000 });
+  for (const f of fs.readdirSync(dir)) if (/^app-control-.*\.exe$/.test(f) && path.join(dir, f) !== exe) { try { fs.rmSync(path.join(dir, f)); } catch { /* still running */ } }
+  return exe;
+}
+function runControl(args) {
+  return new Promise((resolve) => {
+    let exe;
+    try { exe = controlExe(); } catch (e) { resolve({ ok: false, why: `helper: ${e.message || e}` }); return; }
+    execFile(exe, args.map(String), { windowsHide: true, timeout: 20000, maxBuffer: 4 * 1024 * 1024 }, (err, out) => {
+      const line = String(out || "").trim().split(/\r?\n/).pop() || "";
+      try { resolve(JSON.parse(line)); } catch { resolve({ ok: false, why: err ? `helper: ${err.message}` : "helper: no answer" }); }
+    });
+  });
+}
+
+// Words the brain can act on, for the failures the helper reports.
+const CTL_WHY = {
+  gone: "The program's window is gone (it was closed or replaced). Use app_look to see what is in the middle now.",
+  "user-moved": "The user moved the mouse, so you stopped using the program: the user is taking over. Do not use the app_ tools again in this task; tell the user what you did and what is left.",
+  "not-front": "The program could not be brought to the front, so nothing was clicked or typed. Ask the user to click \"Use it\" above the program, then try once more.",
+  "lost-front": "Another window came to the front while typing, so typing stopped there. Use app_look to see what happened.",
+  covered: "Something that is not part of the program covers that spot (a window of another program), so it was not clicked. Use app_look and try another spot, or tell the user.",
+  "blocked-key": "That key would leave the program or reach Windows itself (Windows key, Alt+Tab, Ctrl+Esc, Ctrl+Alt+Delete), so it is never pressed.",
+  "too-long": "That text is too long to type at once (20000 characters at most). Type it in parts.",
+  "off-screen": "The program is off the screen, so it cannot be seen. Ask the user to put it back in the middle of AI Brain.",
+};
+const ctlWhy = (r) => CTL_WHY[r.why] || (String(r.why || "").startsWith("unknown-key") ? `Unknown key "${String(r.why).slice(12)}". Use names like enter, tab, esc, backspace, delete, up, down, left, right, home, end, pageup, pagedown, f1-f24, space, or one character, joined with + (ctrl+s, ctrl+shift+z, alt+f).` : `It did not work (${r.why || "unknown"}).`);
+
+// A fresh picture of the program, with the numbered list (positions in picture pixels).
+async function controlLook() {
+  const file = path.join(app.getPath("userData"), "helpers", `look-${process.pid}.png`);
+  const r = await runControl(["look", docked.hwnd, docked.pid, file, 1400]);
+  if (!r.ok) return { ok: false, why: ctlWhy(r) };
+  const toImg = (v, o) => Math.round((v - o) * r.scale);
+  const items = (r.items || []).map((it, i) => ({
+    n: i + 1, kind: it.kind, name: it.name, ...(it.value !== undefined ? { value: it.value } : {}), ...(it.password ? { password: true } : {}), ...(it.disabled ? { disabled: true } : {}),
+    x: toImg(it.x, r.area.x), y: toImg(it.y, r.area.y), w: Math.max(1, Math.round(it.w * r.scale)), h: Math.max(1, Math.round(it.h * r.scale)),
+    sx: it.x + Math.round(it.w / 2), sy: it.y + Math.round(it.h / 2), // the middle, in screen pixels
+  }));
+  let img;
+  try {
+    const pic = nativeImage.createFromPath(file);
+    let data = pic.toPNG(), type = "image/png";
+    if (data.length > 1_500_000) { data = pic.toJPEG(85); type = "image/jpeg"; }
+    img = { data: data.toString("base64"), type };
+  } catch (e) { return { ok: false, why: `The picture could not be read (${e.message || e}).` }; }
+  try { fs.rmSync(file, { force: true }); } catch { /* not important */ }
+  ctl.look = { hwnd: docked.hwnd, area: r.area, main: r.main, scale: r.scale, items, at: Date.now() };
+  return {
+    ok: true, name: docked.name, title: r.title, front: r.front, complete: r.complete, uiaError: r.uiaError || "",
+    image: { w: r.image.w, h: r.image.h, ...img },
+    popups: (r.popups || []).map((p) => ({ title: p.title, x: toImg(p.x, r.area.x), y: toImg(p.y, r.area.y), w: Math.round(p.w * r.scale), h: Math.round(p.h * r.scale) })),
+    items: items.map(({ sx, sy, ...rest }) => rest),
+  };
+}
+
+// A spot from the brain (a number from the list, or x/y in picture pixels) in screen pixels.
+function controlSpot(a, key = "") {
+  const L = ctl.look;
+  const num = a[`${key}target`];
+  if (num !== undefined && num !== null && num !== "") {
+    const it = L.items.find((x) => x.n === Number(num));
+    if (!it) return { why: `There is no number ${num} in the last app_look list.` };
+    return { x: it.sx, y: it.sy, what: `${it.kind} "${it.name}"` };
+  }
+  const x = Number(a[`${key}x`]), y = Number(a[`${key}y`]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return { why: "Say where: a number from the app_look list, or x and y in picture pixels." };
+  const sx = L.area.x + Math.round(x / L.scale), sy = L.area.y + Math.round(y / L.scale);
+  if (sx < L.area.x || sy < L.area.y || sx >= L.area.x + L.area.w || sy >= L.area.y + L.area.h) return { why: `(${x}, ${y}) is outside the picture (${Math.round(L.area.w * L.scale)} x ${Math.round(L.area.h * L.scale)}).` };
+  return { x: sx, y: sy, what: `(${x}, ${y})` };
+}
+
+async function controlStep(cmd, a) {
+  if (ctl.stopped) return { ok: false, why: ctl.stopped };
+  if (!ctl.look || ctl.look.hwnd !== docked.hwnd) return { ok: false, why: "Use app_look first, to see the program and get its numbered list." };
+  // The window moved or changed size since the picture (AI Brain moved, a panel opened): positions changed.
+  const now = await dockCmd("info");
+  const m = ctl.look.main;
+  if (now.frame && (Math.abs(now.frame.x - m.x) > 2 || Math.abs(now.frame.y - m.y) > 2 || Math.abs(now.frame.w - m.w) > 2 || Math.abs(now.frame.h - m.h) > 2))
+    return { ok: false, why: "The program moved or changed size since the last picture. Use app_look again first." };
+  // Where the brain left the mouse last time: if it is somewhere else now, the user moved it.
+  const exp = ctl.cursor ? [ctl.cursor.x, ctl.cursor.y] : [SKIP_POS, SKIP_POS];
+  let r, did;
+  if (cmd === "click") {
+    const p = controlSpot(a);
+    if (p.why) return { ok: false, why: p.why };
+    const button = ["left", "right", "middle", "none"].includes(a.button) ? a.button : "left";
+    const count = Math.max(1, Math.min(3, Number(a.count) || 1));
+    r = await runControl(["click", docked.hwnd, docked.pid, p.x, p.y, button, count, ...exp]);
+    did = button === "none" ? `Moved the mouse to ${p.what}.` : `${count === 2 ? "Double-clicked" : count === 3 ? "Triple-clicked" : button === "right" ? "Right-clicked" : button === "middle" ? "Middle-clicked" : "Clicked"} ${p.what}.`;
+  } else if (cmd === "drag") {
+    const p1 = controlSpot(a, "from_"), p2 = controlSpot(a, "to_");
+    if (p1.why || p2.why) return { ok: false, why: p1.why || p2.why };
+    const button = ["left", "right", "middle"].includes(a.button) ? a.button : "left";
+    r = await runControl(["drag", docked.hwnd, docked.pid, p1.x, p1.y, p2.x, p2.y, button, ...exp]);
+    did = `Dragged from ${p1.what} to ${p2.what}.`;
+  } else if (cmd === "scroll") {
+    const p = controlSpot(a);
+    if (p.why) return { ok: false, why: p.why };
+    const n = Math.max(-50, Math.min(50, Math.round(Number(a.amount) || 0)));
+    if (!n) return { ok: false, why: "amount must not be 0 (positive = up or right, negative = down or left)." };
+    r = await runControl(["scroll", docked.hwnd, docked.pid, p.x, p.y, n, a.horizontal ? 1 : 0, ...exp]);
+    did = `Scrolled ${Math.abs(n)} step(s) ${a.horizontal ? (n > 0 ? "right" : "left") : (n > 0 ? "up" : "down")} at ${p.what}.`;
+  } else if (cmd === "type") {
+    const t = String(a.text ?? "");
+    if (!t) return { ok: false, why: "Nothing to type." };
+    r = await runControl(["type", docked.hwnd, docked.pid, Buffer.from(t, "utf8").toString("base64"), ...exp]);
+    did = `Typed ${t.length} character(s).`;
+  } else if (cmd === "key") {
+    const k = String(a.keys || "").trim().replace(/\s+/g, "");
+    if (!k || k.length > 60) return { ok: false, why: "Say which key, like enter or ctrl+s." };
+    const times = Math.max(1, Math.min(50, Number(a.times) || 1));
+    r = await runControl(["key", docked.hwnd, docked.pid, k, times, ...exp]);
+    did = `Pressed ${k}${times > 1 ? ` ${times} times` : ""}.`;
+  } else return { ok: false, why: "unknown" };
+  if (r.cursor) ctl.cursor = r.cursor;
+  if (!r.ok) {
+    if (r.why === "user-moved") { ctl.stopped = CTL_WHY["user-moved"]; tellPage({ ev: "brain-control", on: false, why: "user" }); }
+    return { ok: false, why: ctlWhy(r) };
+  }
+  // Let the program react, then show the brain what happened.
+  await sleep(Math.max(150, Math.min(5000, Number(a.wait_ms) || 500)));
+  const look = await controlLook();
+  return look.ok ? { ...look, did } : { ok: false, why: `${did} But the new picture failed: ${look.why}` };
+}
+
+// One request from the brain. task = the brain task it belongs to: a new task starts fresh.
+async function brainControl(req) {
+  const cmd = String(req?.cmd || ""), a = req?.args && typeof req.args === "object" ? req.args : {}, task = String(req?.task || "");
+  if (task !== ctl.task) ctl = { task, hwnd: 0, cursor: null, stopped: "", look: null, busy: false };
+  if (cmd === "state") return { ok: true, docked: docked ? { name: docked.name, title: docked.title } : null, programs: loadPins().map((p) => p.name) };
+  if (ctl.busy) return { ok: false, why: "Another app_ step is still running. Wait for it." };
+  ctl.busy = true;
+  try {
+    if (cmd === "open") {
+      const want = String(a.name || "").trim().toLowerCase();
+      const pins = loadPins();
+      const pin = pins.find((p) => p.name.toLowerCase() === want) || (want.length >= 2 ? pins.find((p) => p.name.toLowerCase().includes(want)) : null);
+      if (!pin) return { ok: false, why: pins.length ? `No program called "${a.name}" in the Apps panel. These are there: ${pins.map((p) => p.name).join(", ")}.` : "The user has not added any program to the Apps panel. Ask them to add one (Apps panel > Add a program)." };
+      if (!(docked && docked.pinId === pin.id)) {
+        if (dockBusy) return { ok: false, why: "AI Brain is busy opening another program. Try again in a moment." };
+        dockBusy = true;
+        let r;
+        try {
+          const up = await startDock();
+          if (!up.ok) return { ok: false, why: `Programs cannot be shown in AI Brain (${up.why}).` };
+          if (docked) await releaseDocked();
+          r = await openPin(pin.id);
+        } finally { dockBusy = false; }
+        if (!r.ok) return { ok: false, why: r.why === "no-window" ? `${pin.name} did not show a window within 90 seconds.` : r.why === "not-found" ? `${pin.name} is not installed where it was (the program file is gone).` : `${pin.name} could not be opened (${r.why}).` };
+        await sleep(1200);
+      }
+    }
+    if (!docked || !docked.pid) return { ok: false, why: `No program is in the middle of AI Brain.${loadPins().length ? ` Use app_open with one of: ${loadPins().map((p) => p.name).join(", ")}.` : " Ask the user to open one from the Apps panel."}` };
+    if (ctl.hwnd !== docked.hwnd) { ctl.hwnd = docked.hwnd; ctl.look = null; ctl.cursor = null; }
+    if (!ctl.stopped) tellPage({ ev: "brain-control", on: true, name: docked.name }); // after the user took over it stays off
+    if (cmd === "look" || cmd === "open") return await controlLook();
+    if (["click", "drag", "scroll", "type", "key"].includes(cmd)) return await controlStep(cmd, a);
+    return { ok: false, why: "unknown" };
+  } catch (err) {
+    return { ok: false, why: String(err?.message || err) };
+  } finally { ctl.busy = false; }
+}
+
 ipcMain.handle("station:apps", async (e, what, arg) => {
   if (!win || e.sender !== win.webContents) return { ok: false, why: "not-allowed" };
   try {
     if (what === "slot") { setSlot(arg); return { ok: true }; }
+    if (what === "control") return await brainControl(arg);
     if (what === "state") return { ok: true, docked: docked ? { name: docked.name, title: docked.title, pin: docked.pinId } : null, pins: await pinsForPage() };
     if (what === "remove") {
       savePins(loadPins().filter((p) => p.id !== String(arg)));
@@ -873,6 +1059,125 @@ async function selfTest(dir) {
       await wait(2000);
       console.log("FLOW WARMDONE", JSON.stringify({ left: (await mine()).length, docked: (await dockCmd("info")).docked }));
     }
+  }
+  if (process.env.BRAIN_SHELL_CONTROL_EXE) {
+    // The brain uses the program in the middle. A small test window (test/fixture-app.cs, which
+    // writes down every click and key it gets) is pinned, opened by the brain and used with the
+    // real mouse and keyboard - each step through the page, the way the brain's steps arrive.
+    await startDock();
+    if (docked) await releaseDocked();
+    const fx = process.env.BRAIN_SHELL_CONTROL_EXE, stateFile = process.env.BRAIN_SHELL_CONTROL_STATE;
+    const state = () => { try { return JSON.parse(fs.readFileSync(stateFile, "utf8")); } catch { return null; } };
+    const step = (cmd, args = {}, task = "task-1") => js(`window.station.apps('control', ${JSON.stringify({ cmd, task, args })})`);
+    const brief = (r) => r && { ok: r.ok, why: r.why, did: r.did, png: !!r.image?.data && r.image.type === "image/png", items: (r.items || []).map((i) => `${i.kind}|${i.name}|${i.value ?? ""}|${i.password ? "pw" : ""}`) };
+    const find = (r, kind, name) => (r?.items || []).find((i) => i.kind === kind && i.name === name);
+    const savedPins = loadPins();
+    savePins([{ id: "fixture", name: "Fixture", target: fx, args: `"${stateFile}"`, cwd: "" }]);
+    const none = await step("look");
+    const st0 = await step("state");
+    const wrong = await step("open", { name: "Photoshop" });
+    const open = await step("open", { name: "fixture" });
+    const badge = await js("!document.querySelector('#av-brain').hidden");
+    const pid = docked?.pid;
+    console.log("CONTROL OPEN", JSON.stringify({ none: none.why, st0, wrong: wrong.why, open: brief(open), badge, docked: !!docked, size: open?.image && { w: open.image.w, h: open.image.h } }));
+    if (open?.ok) {
+      let r = open;
+      const press = find(r, "button", "Press me"), notes = find(r, "edit", "Notes");
+      const c1 = await step("click", { target: press.n });
+      const s1 = state();
+      await step("click", { target: notes.n });
+      const t1 = await step("type", { text: "hello brain" });
+      const s2 = state();
+      await step("key", { keys: "ctrl+a" });
+      const t2 = await step("type", { text: "replaced ünï 🙂" });
+      const s3 = state();
+      console.log("CONTROL INPUT", JSON.stringify({ c1: { ok: c1.ok, did: c1.did, png: !!c1.image?.data }, clicks: s1?.clicks, t1: t1.did, text1: s2?.text, listed: find(t2, "edit", "Notes")?.value, text2: s3?.text }));
+      const k1 = await step("key", { keys: "win+r" }), k2 = await step("key", { keys: "alt+tab" }), k3 = await step("key", { keys: "ctrl+bogus" });
+      r = await step("look");
+      const item5 = find(r, "listitem", "Item 5"), rem = find(r, "checkbox", "Remember"), pad = find(r, "button", "Drag area");
+      const sc = await step("scroll", { target: item5.n, amount: -5 });
+      const s4 = state();
+      r = await step("look");
+      const firstItem = (r.items || []).find((i) => i.kind === "listitem");
+      const dbl = await step("click", { target: firstItem.n, count: 2 });
+      const rc = await step("click", { target: find(r, "button", "Press me").n, button: "right" });
+      const ck = await step("click", { x: rem.x + 8, y: rem.y + Math.round(rem.h / 2) });
+      const dg = await step("drag", { from_x: pad.x + 20, from_y: pad.y + 20, to_x: pad.x + pad.w - 30, to_y: pad.y + pad.h - 30 });
+      const s5 = state();
+      const out = await step("click", { x: 99999, y: 5 }), bad = await step("click", { target: 9999 });
+      console.log("CONTROL MORE", JSON.stringify({ k1: k1.why, k2: k2.why, k3: k3.why, sc: sc.did, wheel: s4?.wheel, top: s4?.top, dbl: dbl.did, doubles: s5?.doubles, rights: s5?.rights, ck: ck.did, checked: s5?.checked, dg: dg.did, drags: s5?.drags, out: out.why, bad: bad.why, secret: find(r, "edit", "Secret") }));
+      // Something of another program over the spot: not clicked.
+      r = await step("look");
+      const at = ctl.look.items.find((i) => i.kind === "button" && i.name === "Press me");
+      const dip = screen.screenToDipPoint({ x: at.sx, y: at.sy });
+      const cover = new BrowserWindow({ x: Math.round(dip.x - 40), y: Math.round(dip.y - 30), width: 80, height: 60, frame: false, alwaysOnTop: true, focusable: false, skipTaskbar: true, show: false, backgroundColor: "#ff00ff" });
+      cover.showInactive();
+      await wait(700);
+      const before = state()?.clicks;
+      const cv = await step("click", { target: at.n });
+      cover.destroy();
+      await wait(300);
+      const coveredClicks = state()?.clicks;
+      // AI Brain moves: the program follows, and old positions are refused until the brain looks again.
+      if (win.isMaximized()) { win.unmaximize(); await wait(800); }
+      if (win.isFullScreen()) { win.setFullScreen(false); await wait(1200); }
+      const b0 = win.getBounds();
+      win.setBounds({ ...b0, x: b0.x + 40, y: b0.y + 30 });
+      await wait(1200);
+      const mv = await step("click", { target: at.n });
+      r = await step("look");
+      const mv2 = await step("click", { target: find(r, "button", "Press me").n });
+      win.setBounds(b0);
+      await wait(1200);
+      console.log("CONTROL GUARD", JSON.stringify({ cv: cv.why, before, coveredClicks, mv: mv.why, mv2: mv2.ok, clicksAfter: state()?.clicks }));
+      // The user moves the mouse: the brain stops for the rest of the task; a new task may use it again.
+      r = await step("look");
+      const p2 = find(r, "button", "Press me");
+      const okClick = await step("click", { target: p2.n });
+      const elsewhere = ctl.look.items.find((i) => i.kind === "listitem");
+      await runControl(["click", docked.hwnd, docked.pid, elsewhere.sx, elsewhere.sy, "none", 1, SKIP_POS, SKIP_POS]); // like the user moving it
+      const um = await step("click", { target: p2.n });
+      const um2 = await step("type", { text: "x" });
+      const badgeAfter = await js("document.querySelector('#av-brain').hidden");
+      const lookStill = await step("look");
+      const early = await step("click", { target: find(lookStill, "button", "Press me").n }, "task-2");
+      const look2 = await step("look", {}, "task-2");
+      const next = await step("click", { target: find(look2, "button", "Press me").n }, "task-2");
+      console.log("CONTROL USER", JSON.stringify({ okClick: okClick.ok, um: um.why, um2: um2.why, badgeHidden: badgeAfter, lookStill: lookStill.ok, early: early.why, nextTask: next.ok }));
+      // The whole way, as the brain's tools use it: server -> page -> this window -> the program.
+      if (process.env.BRAIN_SHELL_SERVER_DATA) {
+        const http = require("node:http");
+        const call = (p, body, headers = {}) => new Promise((res) => {
+          const data = JSON.stringify(body);
+          const q = http.request(`${BASE}${p}`, { method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data), Origin: BASE, ...headers } }, (rs) => {
+            let s = ""; rs.setEncoding("utf8"); rs.on("data", (d) => { s += d; }); rs.on("end", () => { try { res({ status: rs.statusCode, body: JSON.parse(s) }); } catch { res({ status: rs.statusCode, body: null }); } });
+          });
+          q.on("error", (e) => res({ status: 0, body: { why: String(e.message) } }));
+          q.end(data);
+        });
+        await call("/api/settings", { appsBrain: true });
+        await call("/api/task", { text: "Use the program [hang]" });
+        let key = "";
+        for (let i = 0; i < 40 && !key; i++) {
+          await wait(250);
+          try { key = JSON.parse(fs.readFileSync(path.join(process.env.BRAIN_SHELL_SERVER_DATA, "brain-mcp.json"), "utf8")).mcpServers["ai-brain"].env.AI_BRAIN_CONTROL_KEY || ""; } catch { /* not yet */ }
+        }
+        const clicks0 = state()?.clicks;
+        const rl = await call("/api/apps/control", { cmd: "look" }, { "X-Brain-Key": key });
+        const rp = rl.body?.items?.find((i) => i.kind === "button" && i.name === "Press me");
+        const rc2 = rp ? await call("/api/apps/control", { cmd: "click", args: { target: rp.n } }, { "X-Brain-Key": key }) : null;
+        await call("/api/stop", {});
+        await call("/api/settings", { appsBrain: false });
+        console.log("CONTROL RELAY", JSON.stringify({ key: key.length, look: rl.status === 200 && rl.body?.ok, png: !!rl.body?.image?.data, listed: !!rp, click: rc2?.body?.ok, did: rc2?.body?.did, clicks: [clicks0, state()?.clicks] }));
+      }
+    }
+    // Close the test window and put the pins back.
+    const fxPid = pid;
+    await releaseDocked();
+    if (fxPid) { try { process.kill(fxPid); } catch { /* already gone */ } }
+    savePins(savedPins);
+    await wait(800);
+    console.log("CONTROL DONE", JSON.stringify({ closed: !!fxPid, docked: !!docked }));
   }
   if (process.env.BRAIN_SHELL_APPS) {
     // A program in the middle, opened the way a click on a pinned program opens it. System

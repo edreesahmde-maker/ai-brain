@@ -76,6 +76,7 @@ export const DEFAULT_SETTINGS = {
   geminiModel: "auto",    // auto | a model id from "agy models"
   chatgptEnabled: false,
   flowBrain: true,        // the brain may use the Google Flow window (open in AI Brain) to make videos
+  appsBrain: false,       // the brain may use the program in the middle of AI Brain with the mouse and keyboard
   sounds: true,
   notify: false,
   fontSize: 14,           // 12-18
@@ -110,6 +111,7 @@ const RULES = {
   geminiModel: (v) => typeof v === "string" && /^[\w.\-]{1,60}$/.test(v),
   chatgptEnabled: (v) => typeof v === "boolean",
   flowBrain: (v) => typeof v === "boolean",
+  appsBrain: (v) => typeof v === "boolean",
   sounds: (v) => typeof v === "boolean",
   notify: (v) => typeof v === "boolean",
   fontSize: (v) => Number.isInteger(v) && v >= 12 && v <= 18,

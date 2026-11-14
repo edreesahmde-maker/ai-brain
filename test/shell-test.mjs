@@ -5,7 +5,7 @@
 //   BRAIN_SHELL_APP_EXE="C:\...\blender.exe" node test/shell-test.mjs   the same with another program
 // The test program is opened by the test and closed afterwards. If it already has a window open,
 // that part is skipped, so your own windows are never moved.
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -56,15 +56,26 @@ for (let i = 0; ; i++) {
   if (i > 60) throw new Error("server did not start");
   await sleep(200);
 }
+// The brain uses a program: a small test window of our own (test/fixture-app.cs), built here.
+let FIXTURE_EXE = "";
+{
+  const csc = path.join(process.env.WINDIR || "C:\\Windows", "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+  const out = path.join(SHELL_DATA, "fixture-app.exe");
+  try {
+    execFileSync(csc, ["-nologo", "-target:winexe", `-out:${out}`, `-r:${path.join(path.dirname(csc), "System.Windows.Forms.dll")}`, `-r:${path.join(path.dirname(csc), "System.Drawing.dll")}`, path.join(ROOT, "test", "fixture-app.cs")], { windowsHide: true, timeout: 60000 });
+    FIXTURE_EXE = out;
+  } catch (e) { console.log(`  note: the test window could not be built (${e.message})`); }
+}
 const env = { ...process.env, BRAIN_PORT: String(PORT), BRAIN_SHELL_DATA: SHELL_DATA, BRAIN_SHELL_TEST: OUT, BRAIN_SHELL_APPS: "1",
   // Google Flow is tested with a page of the test server and an empty browser profile: never Google, never your browser session.
-  BRAIN_SHELL_FLOW_URL: `http://127.0.0.1:${PORT}/api/ping` };
+  BRAIN_SHELL_FLOW_URL: `http://127.0.0.1:${PORT}/api/ping`,
+  ...(FIXTURE_EXE ? { BRAIN_SHELL_CONTROL_EXE: FIXTURE_EXE, BRAIN_SHELL_CONTROL_STATE: path.join(SHELL_DATA, "fixture-state.json"), BRAIN_SHELL_SERVER_DATA: DATA } : {}) };
 delete env.ELECTRON_RUN_AS_NODE;
 const el = spawn(path.join(ROOT, "node_modules", "electron", "dist", "electron.exe"), [path.join(ROOT, "shell", "main.cjs")], { env, stdio: ["ignore", "pipe", "pipe"] });
 let log = "";
 el.stdout.on("data", (d) => { log += d; });
 el.stderr.on("data", () => {});
-const timer = setTimeout(() => { console.log("  FAIL the desktop window did not finish in 6 minutes"); el.kill(); }, 360000);
+const timer = setTimeout(() => { console.log("  FAIL the desktop window did not finish in 8 minutes"); el.kill(); }, 480000);
 await new Promise((r) => el.on("exit", r));
 clearTimeout(timer);
 server.kill();
@@ -98,6 +109,39 @@ else {
   ok(fw?.holder && fw.r4?.ok && fw.state?.pin === "builtin-flow", "Flow also opens while that browser is already running", JSON.stringify(fw));
   ok(fw?.other && fw.holderStays && fw.count === 2, "it uses the new Flow window and leaves the browser's own window alone", JSON.stringify(fw));
   ok(fd?.left === 0 && fd.docked === false, "the test closed both of its browser windows", JSON.stringify(fd));
+}
+
+console.log("the brain uses the program in the middle");
+if (!FIXTURE_EXE) ok(false, "the test window was built");
+else {
+  const o = line("CONTROL OPEN"), i = line("CONTROL INPUT"), m = line("CONTROL MORE"), g = line("CONTROL GUARD"), u = line("CONTROL USER"), rl = line("CONTROL RELAY"), dn = line("CONTROL DONE");
+  ok(/No program is in the middle/.test(o?.none || "") && /app_open with one of: Fixture/.test(o.none), "with nothing in the middle the brain is told what it can open", o?.none);
+  ok(o?.st0?.ok && o.st0.programs?.includes("Fixture"), "it can list the pinned programs");
+  ok(/No program called "Photoshop".*Fixture/.test(o?.wrong || ""), "a name that is not pinned is refused, with the names that are", o?.wrong);
+  ok(o?.open?.ok && o.docked && o.open.png, "the brain opens a pinned program in the middle and gets a picture", JSON.stringify(o?.open?.why));
+  ok(o?.open?.items?.includes("button|Press me||") && o.open.items.includes("edit|Notes||") && o.open.items.includes("checkbox|Remember||"), "and a list of its buttons and boxes", JSON.stringify(o?.open?.items?.slice(0, 8)));
+  ok(o?.open?.items?.includes("edit|Secret||pw"), "a password box is marked and its text is never read");
+  ok(o?.badge === true, "the page shows that the brain is using it");
+  ok(i?.c1?.ok && /^Clicked button "Press me"/.test(i.c1.did) && i.c1.png && i.clicks === 1, "a click by number lands on the button and returns a new picture", JSON.stringify(i?.c1));
+  ok(i?.text1 === "hello brain" && i.t1 === "Typed 11 character(s).", "typing lands in the clicked text box", JSON.stringify({ text: i?.text1 }));
+  ok(i?.text2 === "replaced ünï 🙂" && i.listed === "replaced ünï 🙂", "shortcuts work (Ctrl+A) and any characters can be typed; the new list shows the new text", JSON.stringify(i));
+  ok(/never pressed/.test(m?.k1 || "") && /never pressed/.test(m?.k2 || ""), "the Windows key and Alt+Tab are never pressed", JSON.stringify({ k1: m?.k1, k2: m?.k2 }));
+  ok(/Unknown key "bogus"/.test(m?.k3 || ""), "an unknown key is explained", m?.k3);
+  ok(m?.wheel === -5 && m.top > 0, "scrolling turns the wheel over the list", JSON.stringify({ wheel: m?.wheel, top: m?.top }));
+  ok(m?.doubles === 1 && /^Double-clicked/.test(m.dbl), "double-click works", m?.dbl);
+  ok(m?.rights === 1, "right-click works");
+  ok(m?.checked === true && /^Clicked \(/.test(m.ck), "a click by picture x,y works", m?.ck);
+  ok(m?.drags === 1 && /^Dragged from/.test(m.dg), "dragging works", m?.dg);
+  ok(/outside the picture/.test(m?.out || "") && /no number 9999/.test(m?.bad || ""), "spots outside the picture and unknown numbers are refused");
+  ok(m?.secret?.password === true && m.secret.value === undefined, "the password box stays unread on every look", JSON.stringify(m?.secret));
+  ok(/covers that spot/.test(g?.cv || "") && g.before === g.coveredClicks, "a spot covered by another program's window is not clicked", JSON.stringify(g));
+  ok(/moved or changed size/.test(g?.mv || "") && g.mv2 === true, "after AI Brain moves, old positions are refused until the brain looks again", JSON.stringify({ mv: g?.mv, mv2: g?.mv2 }));
+  ok(u?.okClick && /user moved the mouse/.test(u.um || "") && /user moved the mouse/.test(u.um2 || ""), "when the user moves the mouse the brain stops for the rest of the task", JSON.stringify(u));
+  ok(u?.badgeHidden === true && u.lookStill === true, "the page stops saying the brain is using it; looking still works");
+  ok(/app_look first/.test(u?.early || "") && u.nextTask === true, "a new task starts fresh: it looks first and can use the program again", JSON.stringify(u));
+  ok(rl?.key === 48 && rl.look && rl.png && rl.listed, "the whole way from the brain's tools: the server asks the page, the window looks", JSON.stringify(rl));
+  ok(rl?.click === true && /Press me/.test(rl.did || "") && rl.clicks?.[1] === rl.clicks?.[0] + 1, "and a click from the brain's tools lands in the program", JSON.stringify(rl));
+  ok(dn?.closed && dn.docked === false, "the test window was closed and nothing is left in the middle", JSON.stringify(dn));
 }
 
 console.log("program in the middle");

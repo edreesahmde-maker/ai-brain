@@ -322,6 +322,11 @@ body.zen #rail-panels, body.zen #rail .rail-sep { display: none !important; }
 .av-icon { display: grid; place-items: center; color: var(--accent-hi, var(--accent)); }
 #av-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
 .av-title { flex: 1; min-width: 0; color: var(--faint); font-size: .8em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Shown while the brain uses the program with the mouse and keyboard. */
+.av-brain { flex: none; max-width: 45%; padding: 2px 9px; border-radius: 999px; font-size: .78em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--accent-hi, var(--accent)); border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); animation: av-brain-pulse 1.6s ease-in-out infinite; }
+@keyframes av-brain-pulse { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .av-brain { animation: none; } }
 .av-slot { flex: 1; min-height: 0; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 0 0 10px 10px; background: var(--panel-2, var(--panel)); }
 .av-note { text-align: center; color: var(--muted); max-width: 340px; padding: 16px; display: flex; flex-direction: column; gap: 6px; }
 .av-note p { margin: 0; color: var(--faint); font-size: .88em; }

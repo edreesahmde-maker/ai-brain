@@ -148,6 +148,115 @@ if (process.env.AI_BRAIN_FLOW === "1") {
   }, run(({ count }) => flowSaveVideos(count || 1)));
 }
 
+// The program in the middle of AI Brain (Blender, an editor, a browser...): the brain sees it and uses
+// the real mouse and keyboard in it. Only while "Let the brain use the program in the middle" is on;
+// each step goes to the AI Brain window with this task's key, and only the docked program is touched.
+const APP_URL = process.env.AI_BRAIN_APP_URL;
+const CONTROL_KEY = process.env.AI_BRAIN_CONTROL_KEY;
+if (process.env.AI_BRAIN_APPS === "1" && APP_URL && CONTROL_KEY) {
+  const step = (cmd, args = {}) => new Promise((resolve, reject) => {
+    const u = new URL("/api/apps/control", APP_URL);
+    const body = JSON.stringify({ cmd, args });
+    const req = http.request(u, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), Origin: u.origin, "X-Brain-Key": CONTROL_KEY },
+    }, (res) => {
+      let s = "";
+      res.setEncoding("utf8");
+      res.on("data", (d) => { s += d; });
+      res.on("end", () => { try { resolve(JSON.parse(s)); } catch { reject(new Error(`AI Brain answered ${res.statusCode}.`)); } });
+    });
+    req.on("error", () => reject(new Error("AI Brain is not running, so no program can be used.")));
+    req.end(body);
+  });
+  // The answer to every step: what was done, the picture, and the numbered list.
+  const show = (r) => {
+    if (!r?.ok) return { content: [{ type: "text", text: String(r?.why || "It did not work.") }], isError: true };
+    const lines = [];
+    if (r.did) lines.push(r.did);
+    lines.push(`Program: ${r.name}${r.title && r.title !== r.name ? ` - window title "${r.title}"` : ""}. Picture: ${r.image.w} x ${r.image.h} pixels (x to the right, y down, from the top-left corner).`);
+    if (r.front === false) lines.push("Note: the program could not be brought to the front, so something may cover it in the picture.");
+    for (const p of r.popups || []) lines.push(`Also open: a window "${p.title}" at (${p.x}, ${p.y}), ${p.w} x ${p.h}.`);
+    if (r.items?.length) {
+      lines.push("", "Things on screen (click by number; x,y = top-left corner, then width x height):");
+      for (const it of r.items) {
+        const extra = it.password ? " [password box - never type into it]" : it.value !== undefined && it.value !== "" ? ` value="${it.value}"` : "";
+        lines.push(`${it.n}. ${it.kind} "${it.name}"${extra}${it.disabled ? " (disabled)" : ""} at ${it.x},${it.y} ${it.w}x${it.h}`);
+      }
+      if (r.complete === false) lines.push("(The list may be incomplete: the program was slow to describe itself.)");
+    } else {
+      lines.push("", "This program lists nothing it can be clicked by (it draws everything itself, like Blender or a game). Use the picture: click by x and y, and use its keyboard shortcuts.");
+    }
+    return { content: [{ type: "text", text: lines.join("\n") }, { type: "image", data: r.image.data, mimeType: r.image.type || "image/png" }] };
+  };
+  const run = (cmd, pick) => async (a) => { try { return show(await step(cmd, pick ? pick(a) : a)); } catch (e) { return fail(e); } };
+  const spot = {
+    target: z.number().int().min(1).optional().describe("The number of the thing from the list (best when it is listed)"),
+    x: z.number().optional().describe("Or: x in the picture, in pixels from the left"),
+    y: z.number().optional().describe("Or: y in the picture, in pixels from the top"),
+  };
+  const wait = { wait_ms: z.number().int().min(150).max(5000).optional().describe("How long to let the program react before the new picture (default 500)") };
+
+  server.registerTool("app_open", {
+    title: "Open a program in AI Brain",
+    description: "Open one of the programs the user added to AI Brain's Apps panel, in the middle of AI Brain, and look at it. If you do not know the names, call it with any name: the answer lists them.",
+    inputSchema: { name: z.string().describe("The program's name as shown in the Apps panel") },
+  }, run("open"));
+  server.registerTool("app_look", {
+    title: "Look at the program",
+    description: "See the program in the middle of AI Brain: a picture of it and a numbered list of its buttons, menus, text boxes and other things. Use it first, and whenever you are not sure what is on screen.",
+    inputSchema: {},
+  }, run("look"));
+  server.registerTool("app_click", {
+    title: "Click in the program",
+    description: "Click in the program, on a thing from the app_look list (target) or at x,y in the picture. Uses the real mouse. Returns a new picture.",
+    inputSchema: {
+      ...spot,
+      button: z.enum(["left", "right", "middle", "none"]).optional().describe("Mouse button (default left; none = only move the mouse there, to hover)"),
+      count: z.number().int().min(1).max(3).optional().describe("2 = double-click, 3 = triple-click (default 1)"),
+      ...wait,
+    },
+  }, run("click"));
+  server.registerTool("app_type", {
+    title: "Type in the program",
+    description: "Type text into the program where its keyboard focus is (click the text box first). \\n becomes Enter. Uses the real keyboard. Never type passwords. Returns a new picture.",
+    inputSchema: { text: z.string().min(1).max(20000).describe("The text to type"), ...wait },
+  }, run("type"));
+  server.registerTool("app_key", {
+    title: "Press keys in the program",
+    description: "Press a key or shortcut in the program, like enter, esc, tab, ctrl+s, ctrl+shift+z, alt+f, f5, delete, up, or a single character. Keys that would leave the program (Windows key, Alt+Tab) are never pressed. Returns a new picture.",
+    inputSchema: {
+      keys: z.string().min(1).max(60).describe("The key or shortcut, with + between keys"),
+      times: z.number().int().min(1).max(50).optional().describe("How many times to press it (default 1)"),
+      ...wait,
+    },
+  }, run("key"));
+  server.registerTool("app_scroll", {
+    title: "Scroll in the program",
+    description: "Turn the mouse wheel over a spot in the program (a list, a page, a 3D view to zoom). Returns a new picture.",
+    inputSchema: {
+      ...spot,
+      amount: z.number().int().min(-50).max(50).describe("Wheel steps: positive = up (or zoom in), negative = down"),
+      horizontal: z.boolean().optional().describe("Scroll sideways instead (positive = right)"),
+      ...wait,
+    },
+  }, run("scroll"));
+  server.registerTool("app_drag", {
+    title: "Drag in the program",
+    description: "Press the mouse at one spot, move it to another and let go (move a slider, a window part, an object, draw a line, select an area). Returns a new picture.",
+    inputSchema: {
+      from_target: z.number().int().min(1).optional().describe("Start: number from the list"),
+      from_x: z.number().optional().describe("Or start x in the picture"),
+      from_y: z.number().optional().describe("Or start y in the picture"),
+      to_target: z.number().int().min(1).optional().describe("End: number from the list"),
+      to_x: z.number().optional().describe("Or end x in the picture"),
+      to_y: z.number().optional().describe("Or end y in the picture"),
+      button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button to hold (default left; Blender rotates the view with middle)"),
+      ...wait,
+    },
+  }, run("drag"));
+}
+
 if (CHATGPT) server.registerTool(
   "ask_both",
   {

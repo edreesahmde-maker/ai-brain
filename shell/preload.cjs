@@ -22,10 +22,20 @@ contextBridge.exposeInMainWorld("station", {
   // A program (Blender, Godot, Chrome, ...) shown in the middle of AI Brain. Programs are only
   // added through the Windows file picker; the page passes ids and numbers, never paths.
   apps: (what, arg) => {
-    const ok = ["state", "add", "remove", "rename", "open", "flow", "flow-signin", "windows", "dock", "release", "front", "slot", "info"];
+    const ok = ["state", "add", "remove", "rename", "open", "flow", "flow-signin", "windows", "dock", "release", "front", "slot", "info", "control"];
     if (!ok.includes(what)) return Promise.resolve({ ok: false, why: "unknown" });
     let a;
     if (what === "slot") a = { x: +arg?.x || 0, y: +arg?.y || 0, w: +arg?.w || 0, h: +arg?.h || 0, show: !!arg?.show };
+    // A step the brain asked for (passed on from the server): only plain values, only for the docked program.
+    else if (what === "control") {
+      const src = arg?.args && typeof arg.args === "object" ? arg.args : {};
+      const args = {};
+      for (const k of ["target", "x", "y", "from_target", "from_x", "from_y", "to_target", "to_x", "to_y", "amount", "count", "times", "wait_ms"]) if (src[k] !== undefined && src[k] !== null) args[k] = Number(src[k]);
+      for (const k of ["button", "keys", "name"]) if (src[k] !== undefined) args[k] = String(src[k]).slice(0, 80);
+      if (src.text !== undefined) args.text = String(src.text).slice(0, 20000);
+      if (src.horizontal !== undefined) args.horizontal = !!src.horizontal;
+      a = { cmd: String(arg?.cmd ?? "").slice(0, 20), task: String(arg?.task ?? "").slice(0, 64), args };
+    }
     else if (what === "rename") a = { id: String(arg?.id ?? "").slice(0, 40), name: String(arg?.name ?? "").slice(0, 60) };
     else if (what === "dock") a = Number(arg) || 0;
     else a = String(arg ?? "").slice(0, 40);
