@@ -5,7 +5,7 @@
 //   [both]  ask ChatGPT and Gemini       [error] finish with an error result
 //   [hang]  start answering, never end   [crash] exit with an error before answering
 //   [long]  long Markdown answer         [xss]   answer full of unsafe HTML
-//   [slow]  slower typing
+//   [slow]  slower typing              [video] make a video, then answer
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -115,7 +115,7 @@ if (has("change") || has("command") || has("twice")) {
   else {
     const files = has("twice") ? ["fake-change-1.txt", "fake-change-2.txt"] : ["fake-change.txt"];
     for (const f of files) {
-      const file = has("forbidden") ? "C:\\Users\\me\\AppData\\Roaming\\discord\\Local Storage\\leveldb\\x.log" : path.join(process.cwd(), f);
+      const file = has("forbidden") ? "C:\\Users\\me\\AppData\\Roaming\\discord\\Local Storage\\leveldb\\x.log" : has("keyfile") ? path.join(DATA, "google-key.json") : path.join(process.cwd(), f);
       results.push(await guarded("Write", { file_path: file, content: "hello from the brain" }, () => fs.writeFileSync(file, "hello from the brain")));
     }
   }
@@ -140,6 +140,15 @@ if (has("tool")) {
   });
   const file = r.split("\n").pop();
   const text = `Here is your picture.\n\nSaved to: ${file}`;
+  await say(text);
+  finish(text);
+} else if (has("video")) {
+  const r = await tool("mcp__ai-brain__generate_video", { description: "A test clip, a clover turning in the wind" }, () => {
+    const dest = path.join(MEDIA, `${Date.now().toString(36)}-brain_video.mp4`);
+    fs.copyFileSync(process.env.BRAIN_FAKE_VIDEO, dest);
+    return `Video saved (8 seconds, 16:9):\n${dest}`;
+  });
+  const text = `Here is your video.\n\nSaved to: ${r.split("\n").pop()}`;
   await say(text);
   finish(text);
 } else if (has("both")) {

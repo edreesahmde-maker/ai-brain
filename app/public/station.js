@@ -10,7 +10,13 @@
   const root = document.documentElement;
   const shell = window.station && window.station.shell ? window.station : null;
 
-  // ---------- panels and presets ----------
+  // ---------- panels and layouts ----------
+  // The work area is a tree of rows and columns. Its leaves are the side panels, the chat ("main")
+  // and the program in the middle ("app"). A node is a leaf id, or { d: "r" (side by side) or
+  // "c" (stacked), k: [children], s: [weights] }. Every leaf element stays a direct child of #tiles
+  // and is only given a position, never moved in the page, so the chat keeps its scroll and focus.
+  // With free-floating panels on, each leaf has its own spot and size instead (L.fl, in parts of
+  // the work area) and a stacking order (L.z).
   const PANELS = {
     gemini: { label: "Gemini", icon: "star", side: "left", f: 1.6 },
     chatgpt: { label: "ChatGPT", icon: "users", side: "left", f: 1.2 },
@@ -20,47 +26,140 @@
     recent: { label: "Recent images", icon: "image", side: "left", f: 0.7 },
     music: { label: "Music", icon: "music", side: "right", f: 0.8 },
     discord: { label: "Discord", icon: "chat", side: "right", f: 2.2 },
+    apps: { label: "Apps", icon: "window", side: "left", f: 1.2 },
   };
   const IDS = Object.keys(PANELS);
-  const PRESETS = {
-    focus: { left: { w: 300, items: [] }, right: { w: 300, items: [] } },
-    station: { left: { w: 310, items: ["gemini", "activity"] }, right: { w: 300, items: ["usage", "music", "stats"] } },
-    all: { left: { w: 310, items: ["gemini", "activity", "recent"] }, right: { w: 330, items: ["usage", "music", "discord", "stats"] } },
-    social: { left: { w: 300, items: ["gemini"] }, right: { w: 440, items: ["discord", "music"] } },
-  };
-  const PRESET_NAMES = { focus: "Focus", station: "Station", all: "Everything", social: "Social", mine: "Mine" };
+  const LEAVES = ["main", "app", ...IDS];
+  const leafName = (id) => (id === "main" ? "Chat" : id === "app" ? "Program" : PANELS[id]?.label || id);
+  const SIDES = ["left", "right", "top", "bottom"];
   const chatgptOn = () => !!B.S.settings?.chatgptEnabled;
   const usable = (id) => id !== "chatgpt" || chatgptOn();
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  const col = (...ids) => (ids.length === 1 ? ids[0] : { d: "c", k: ids, s: ids.map((id) => PANELS[id].f) });
+  const rowOf = (...pairs) => ({ d: "r", k: pairs.map((p) => p[0]), s: pairs.map((p) => p[1]) });
+  // Weights are about the pixel widths on a normal screen. While no program is shown, the
+  // program's share goes to the chat.
+  const PRESETS = {
+    focus: () => rowOf(["app", 900], ["main", 700]),
+    station: () => rowOf([col("gemini", "activity"), 310], ["app", 560], ["main", 440], [col("usage", "music", "stats"), 300]),
+    all: () => rowOf([col("gemini", ...(chatgptOn() ? ["chatgpt"] : []), "activity", "recent"), 310], ["app", 520], ["main", 440], [col("usage", "music", "discord", "stats"), 330]),
+    social: () => rowOf(["gemini", 300], ["app", 460], ["main", 440], [col("discord", "music"), 440]),
+  };
+  const PRESET_NAMES = { focus: "Focus", station: "Station", all: "Everything", social: "Social", mine: "Mine" };
+
+  // ----- the tree -----
+  const isNode = (n) => !!n && typeof n === "object";
+  const leavesOf = (n, out = []) => { if (typeof n === "string") out.push(n); else if (isNode(n)) n.k.forEach((c) => leavesOf(c, out)); return out; };
+  const holds = (n, id) => n === id || (isNode(n) && n.k.some((c) => holds(c, id)));
+  function where(n, id, p = null, i = -1) {
+    if (n === id) return { p, i };
+    if (isNode(n)) for (let j = 0; j < n.k.length; j++) { const f = where(n.k[j], id, n, j); if (f) return f; }
+    return null;
+  }
+  const r3 = (v) => Math.max(0.001, Math.round(v * 1000) / 1000);
+  // Tidy a tree: no empty nodes, no node with one child, no row inside a row (or column in a column).
+  function norm(n) {
+    if (!isNode(n)) return n || null;
+    const k = [], s = [];
+    n.k.forEach((c, i) => {
+      const x = norm(c);
+      if (!x) return;
+      if (isNode(x) && x.d === n.d) {
+        const sum = x.s.reduce((a, b) => a + b, 0) || 1;
+        x.k.forEach((cc, j) => { k.push(cc); s.push(r3(n.s[i] * x.s[j] / sum)); });
+      } else { k.push(x); s.push(r3(n.s[i])); }
+    });
+    if (!k.length) return null;
+    return k.length === 1 ? k[0] : { d: n.d, k, s };
+  }
+  function cut(t, id) {
+    const f = where(t, id);
+    if (!f) return t;
+    if (!f.p) return null;
+    f.p.k.splice(f.i, 1); f.p.s.splice(f.i, 1);
+    return norm(t);
+  }
+  // Put a leaf beside a target leaf, or along an edge of the whole work area (target "*").
+  function put(t, id, target, side) {
+    const d = side === "left" || side === "right" ? "r" : "c", after = side === "right" || side === "bottom";
+    if (!t) return id;
+    if (target === "*" || !holds(t, target)) {
+      const r = isNode(t) && t.d === d ? t : { d, k: [t], s: [1] };
+      const w = r3(r.s.reduce((a, b) => a + b, 0) * 0.28);
+      if (after) { r.k.push(id); r.s.push(w); } else { r.k.unshift(id); r.s.unshift(w); }
+      return norm(r);
+    }
+    const f = where(t, target);
+    const pair = { d, k: after ? [target, id] : [id, target], s: [1, 1] };
+    if (!f.p) return pair;
+    if (f.p.d === d) {
+      const half = r3(f.p.s[f.i] / 2), at = f.i + (after ? 1 : 0);
+      f.p.s[f.i] = half;
+      f.p.k.splice(at, 0, id); f.p.s.splice(at, 0, half);
+    } else f.p.k[f.i] = pair;
+    return norm(t);
+  }
+  const swapIn = (n, a, b) => (n === a ? b : n === b ? a : isNode(n) ? { ...n, k: n.k.map((c) => swapIn(c, a, b)) } : n);
+  function cleanTree(n, seen, depth) {
+    if (typeof n === "string") { if (!LEAVES.includes(n) || seen.has(n)) return null; seen.add(n); return n; }
+    if (!isNode(n) || depth > 6 || (n.d !== "r" && n.d !== "c") || !Array.isArray(n.k)) return null;
+    const k = [], s = [];
+    n.k.slice(0, 16).forEach((c, i) => {
+      const x = cleanTree(c, seen, depth + 1);
+      if (!x) return;
+      const w = Number(Array.isArray(n.s) ? n.s[i] : 1);
+      k.push(x); s.push(w > 0.0005 && w < 1e5 ? r3(w) : 1);
+    });
+    return k.length ? { d: n.d, k, s } : null;
+  }
+  // The chat is always there, and so is the program's place (it only shows while a program is in it).
+  function fixTree(t) {
+    const seen = new Set();
+    let n = norm(cleanTree(t, seen, 0));
+    if (!seen.has("main")) n = n ? put(n, "main", "*", "right") : "main";
+    if (!seen.has("app")) n = put(n, "app", "main", "left");
+    return n;
+  }
+  // Layouts saved before the tree: a left and a right column of panels.
+  function migrate(x) {
+    const side = (s) => (Array.isArray(s?.items) ? s.items : []).filter((id) => PANELS[id]);
+    const colOf = (ids) => (ids.length === 1 ? ids[0] : { d: "c", k: ids, s: ids.map((id) => Number(x.sizes?.[id]) || PANELS[id].f) });
+    const l = side(x.left), r = side(x.right), k = [], s = [];
+    if (l.length) { k.push(colOf(l)); s.push(Number(x.left.w) || 300); }
+    k.push("app", "main"); s.push(560, Number(store.get("chatW", 440)) || 440);
+    if (r.length) { k.push(colOf(r)); s.push(Number(x.right.w) || 300); }
+    return { d: "r", k, s };
+  }
+  const treeOf = (o) => fixTree(o.root !== undefined ? o.root : o.left || o.right ? migrate(o) : null);
+  function cleanFl(f) {
+    const out = {};
+    if (!isNode(f)) return out;
+    for (const id of LEAVES) {
+      const v = f[id];
+      if (!Array.isArray(v) || v.length !== 4 || !v.every((n) => Number.isFinite(n))) continue;
+      const [x, y, w, h] = v;
+      if (x > -1 && x < 1 && y > -0.1 && y < 1 && w > 0.02 && w <= 1.01 && h > 0.02 && h <= 1.01) out[id] = v.map((n) => Math.round(n * 10000) / 10000);
+    }
+    return out;
+  }
+  const cleanIds = (a) => [...new Set((Array.isArray(a) ? a : []).filter((id) => LEAVES.includes(id)))];
 
   let L = fromPreset("station");
   let lastSaved = "";
   function fromPreset(name, base) {
-    const p = name === "mine" ? base?.mine : PRESETS[name];
+    const p = name === "mine" ? base?.mine : PRESETS[name] ? { root: PRESETS[name](), collapsed: [], fl: {} } : null;
     if (!p) return null;
-    const out = {
-      v: 1, preset: name,
-      left: { w: p.left.w, items: [...p.left.items] }, right: { w: p.right.w, items: [...p.right.items] },
-      sizes: { ...(p.sizes || {}) }, collapsed: [...(p.collapsed || [])], mine: base?.mine || null,
-    };
-    if (name === "all" && chatgptOn()) out.left.items.splice(1, 0, "chatgpt");
-    return out;
+    return { v: 2, preset: name, root: fixTree(clone(p.root)), collapsed: [...(p.collapsed || [])], home: base?.home || {},
+      mine: base?.mine || null, float: !!base?.float, fl: clone(p.fl || {}), z: [] };
   }
   function clean(x) {
-    // Never trust a saved layout blindly: keep known panels, each in one place, sane widths.
-    if (!x || typeof x !== "object") return null;
-    const seen = new Set();
-    const side = (s) => {
-      const items = (Array.isArray(s?.items) ? s.items : []).filter((id) => PANELS[id] && !seen.has(id) && seen.add(id));
-      const w = Math.round(Number(s?.w));
-      return { w: w >= 200 && w <= 1400 ? w : 300, items };
-    };
-    const out = { v: 1, preset: typeof x.preset === "string" ? x.preset : "", left: side(x.left), right: side(x.right), sizes: {}, collapsed: [], mine: null };
-    for (const id of IDS) { const f = Number(x.sizes?.[id]); if (f > 0.05 && f < 50) out.sizes[id] = Math.round(f * 1000) / 1000; }
-    out.collapsed = (Array.isArray(x.collapsed) ? x.collapsed : []).filter((id) => PANELS[id]);
-    if (x.mine && typeof x.mine === "object") {
-      const m = clean({ ...x.mine, mine: null });
-      if (m) out.mine = { left: m.left, right: m.right, sizes: m.sizes, collapsed: m.collapsed };
-    }
+    // Never trust a saved layout blindly: known leaves only, each once, sane sizes.
+    if (!isNode(x)) return null;
+    const home = {};
+    if (isNode(x.home)) for (const id of IDS) { const v = x.home[id]; if (isNode(v) && LEAVES.includes(v.near) && SIDES.includes(v.side)) home[id] = { near: v.near, side: v.side }; }
+    const out = { v: 2, preset: typeof x.preset === "string" ? x.preset : "", root: treeOf(x), collapsed: cleanIds(x.collapsed).filter((id) => PANELS[id]),
+      home, mine: null, float: x.float === true, fl: cleanFl(x.fl), z: cleanIds(x.z) };
+    if (isNode(x.mine)) out.mine = { root: treeOf(x.mine), collapsed: cleanIds(x.mine.collapsed).filter((id) => PANELS[id]), fl: cleanFl(x.mine.fl) };
     return out;
   }
   const serial = () => JSON.stringify(L);
@@ -79,43 +178,70 @@
   function changed() { L.preset = ""; render(); save(); }
 
   // ---------- rail buttons and panel heads ----------
+  const tiles = $("#tiles");
   const railBtns = {};
+  const panelEl = (id) => $(`[data-panel="${id}"]`);
+  const leafEl = (id) => (id === "main" ? $("#main") : id === "app" ? $("#appview") : panelEl(id));
   for (const id of IDS) {
     const p = PANELS[id];
     const b = h("button", { type: "button", class: "icon-btn", "data-toggle": id, title: `${p.label} – show or hide`, "aria-label": `Show or hide ${p.label}`, "aria-pressed": "false" }, icon(p.icon));
     b.addEventListener("click", () => (isShown(id) ? hide(id) : show(id)));
     railBtns[id] = b;
     $("#rail-panels").append(b);
-    const panel = $(`[data-panel="${id}"]`);
+    const panel = panelEl(id);
     const head = $(".p-head", panel);
     const more = h("button", { type: "button", class: "icon-btn p-more", title: "Panel menu: move, resize or hide", "aria-label": `${p.label} panel menu`, "aria-haspopup": "menu" }, icon("dots"));
     more.addEventListener("click", (e) => { e.stopPropagation(); panelMenu(id, more); });
     head.append(more);
     head.addEventListener("dblclick", (e) => { if (!e.target.closest("button, input, textarea, select, a")) toggleCollapse(id); });
+    tiles.append(panel); // once; from now on panels are only positioned
   }
-  const panelEl = (id) => $(`[data-panel="${id}"]`);
-  const sideOf = (id) => (L.left.items.includes(id) ? "left" : L.right.items.includes(id) ? "right" : "");
-  const isShown = (id) => !!sideOf(id) && usable(id);
+  const HANDLE = { main: "#stage", app: ".av-head" };
+  for (const id of LEAVES) {
+    const el = leafEl(id);
+    el.classList.add("leaf");
+    el.dataset.leaf = id;
+    const handle = HANDLE[id] ? $(HANDLE[id], el) : $(".p-head", el);
+    handle.classList.add("grab");
+    handle.title = handle.title || `Drag to move ${leafName(id) === "Chat" ? "the chat" : leafName(id)}`;
+    handle.addEventListener("pointerdown", (e) => grab(e, id));
+    for (const dir of ["n", "s", "e", "w", "ne", "nw", "se", "sw"]) {
+      const rz = h("div", { class: `rz rz-${dir}`, "aria-hidden": "true" });
+      rz.addEventListener("pointerdown", (e) => resizeFloat(e, id, dir));
+      el.append(rz);
+    }
+  }
+  const inTree = (id) => holds(L.root, id);
+  const isShown = (id) => !!PANELS[id] && inTree(id) && usable(id);
+  const isZen = () => document.body.classList.contains("zen");
 
   function show(id, opts = {}) {
     if (!PANELS[id]) return;
     if (!usable(id)) { toast("Turn ChatGPT on in Settings first."); return; }
-    if (document.body.classList.contains("zen")) B.setZen(false);
-    if (!sideOf(id)) {
-      const side = opts.side || L.home?.[id] || PANELS[id].side;
-      L[side].items.push(id);
+    if (isZen()) { B.setZen(false); layout(); }
+    if (!inTree(id)) {
+      const home = L.home?.[id];
+      if (!opts.side && home && home.near !== id && inTree(home.near)) L.root = put(L.root, id, home.near, home.side);
+      else toSide(id, opts.side || PANELS[id].side);
     }
     L.collapsed = L.collapsed.filter((x) => x !== id);
+    if (L.float) raise(id, true);
     changed();
     const el = panelEl(id);
     el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
     if (id === "discord") discordWanted();
+    if (id === "apps") refreshApps();
   }
   function hide(id) {
-    const side = sideOf(id);
-    if (!side) return;
-    L.home = { ...(L.home || {}), [id]: side };
-    L[side].items = L[side].items.filter((x) => x !== id);
+    const f = where(L.root, id);
+    if (!f || !PANELS[id]) return;
+    if (f.p) {
+      // Remember the neighbour, so the rail button brings it back to the same place.
+      const before = f.i > 0, sib = leavesOf(f.p.k[before ? f.i - 1 : f.i + 1]);
+      const side = f.p.d === "c" ? (before ? "bottom" : "top") : (before ? "right" : "left");
+      L.home = { ...(L.home || {}), [id]: { near: before ? sib[sib.length - 1] : sib[0], side } };
+    }
+    L.root = cut(L.root, id);
     const max = $(".panel.max");
     if (max && max === panelEl(id)) B.toggleMax(max, false);
     changed();
@@ -124,148 +250,389 @@
     L.collapsed = L.collapsed.includes(id) ? L.collapsed.filter((x) => x !== id) : [...L.collapsed, id];
     changed();
   }
+  // Up and down: trade places with whatever is right above or below on screen.
   function move(id, delta) {
-    const side = sideOf(id);
-    const list = L[side].items, i = list.indexOf(id), j = i + delta;
-    if (j < 0 || j >= list.length) return;
-    [list[i], list[j]] = [list[j], list[i]];
+    const nb = neighbour(id, delta);
+    if (!nb) return;
+    L.root = swapIn(L.root, id, nb);
     changed();
   }
-  function moveSide(id) {
-    const from = sideOf(id), to = from === "left" ? "right" : "left";
-    L[from].items = L[from].items.filter((x) => x !== id);
-    L[to].items.push(id);
+  // To the left or right edge: under the lowest panel there, or as a new column along that edge.
+  function toSide(id, side) {
+    if (inTree(id)) L.root = cut(L.root, id);
+    const g = gap(), W = tiles.clientWidth;
+    const along = Object.entries(RECTS).filter(([k, r]) => k !== id && PANELS[k] && inTree(k)
+      && (side === "left" ? r.x <= g + 1 : r.x + r.w >= W - g - 1));
+    const pick = along.sort((a, b) => (b[1].y + b[1].h) - (a[1].y + a[1].h))[0];
+    L.root = pick ? put(L.root, id, pick[0], "bottom") : put(L.root, id, "*", side);
+  }
+  const onSide = (id, side) => { const r = RECTS[id], g = gap(); return !!r && (side === "left" ? r.x <= g + 1 : r.x + r.w >= tiles.clientWidth - g - 1); };
+  function moveSide(id, side) { toSide(id, side); changed(); }
+
+  // ---------- placing everything ----------
+  let RECTS = {}, SPLITS = [];
+  const gap = () => parseFloat(getComputedStyle(root).getPropertyValue("--gap")) || 6;
+  const narrow = () => tiles.clientWidth < 600;
+  function drawn(id) {
+    if (id === "main") return true;
+    if (isZen() || narrow()) return false;
+    if (id === "app") return !$("#appview").hidden;
+    return usable(id);
+  }
+  const shows = (n) => (typeof n === "string" ? drawn(n) : n.k.some(shows));
+  const headH = (id) => (($(".p-head", leafEl(id))?.offsetHeight) || 38) + 2;
+  const folded = (id) => !!PANELS[id] && L.collapsed.includes(id);
+  const MINW = { main: 320, app: 240 };
+  function minOf(n, horiz) {
+    if (typeof n === "string") return horiz ? MINW[n] || 160 : folded(n) ? headH(n) : 64;
+    const kids = n.k.filter(shows);
+    if ((n.d === "r") === horiz) return kids.reduce((a, c) => a + minOf(c, horiz), 0) + gap() * Math.max(0, kids.length - 1);
+    return Math.max(0, ...kids.map((c) => minOf(c, horiz)));
+  }
+  function solve(n, x, y, w, h, out, splits) {
+    if (typeof n === "string") { out[n] = { x, y, w, h: folded(n) ? Math.min(h, headH(n)) : h }; return; }
+    const kids = [];
+    n.k.forEach((c, i) => { if (shows(c)) kids.push(i); });
+    if (!kids.length) return;
+    const horiz = n.d === "r", g = gap();
+    // A hidden child's share goes to the shown child that holds the chat.
+    const eff = kids.map((i) => n.s[i]);
+    const hidden = n.k.map((_, i) => i).filter((i) => !kids.includes(i));
+    const mi = kids.findIndex((i) => holds(n.k[i], "main"));
+    if (mi >= 0) for (const i of hidden) eff[mi] += n.s[i];
+    // Folded panels in a stack keep only their title.
+    const fixed = kids.map((i) => (!horiz && folded(n.k[i]) ? headH(n.k[i]) : null));
+    const full = horiz ? w : h;
+    const room = Math.max(0, full - g * (kids.length - 1) - fixed.reduce((a, v) => a + (v || 0), 0));
+    // Share the room by weight, but nothing gets less than its smallest useful size (the chat
+    // stays readable on a small screen; its neighbours give way first).
+    const mins = kids.map((i, j) => (fixed[j] != null ? 0 : minOf(n.k[i], horiz)));
+    const sizes = kids.map((_, j) => fixed[j]);
+    let left = room, free = kids.map((_, j) => j).filter((j) => fixed[j] == null);
+    for (let pass = 0; pass < kids.length && free.length; pass++) {
+      const wsum = free.reduce((a, j) => a + eff[j], 0) || 1;
+      const low = free.filter((j) => left * eff[j] / wsum < mins[j]);
+      if (!low.length) break;
+      for (const j of low) { sizes[j] = mins[j]; left -= mins[j]; }
+      free = free.filter((j) => !low.includes(j));
+    }
+    if (left < 0) {
+      // Not even the smallest sizes fit: shrink everything evenly.
+      const msum = mins.reduce((a, v) => a + v, 0) || 1;
+      kids.forEach((_, j) => { if (fixed[j] == null) sizes[j] = Math.round(room * mins[j] / msum); });
+    } else {
+      const wsum = free.reduce((a, j) => a + eff[j], 0) || 1;
+      for (const j of free) sizes[j] = Math.round(left * eff[j] / wsum);
+      for (const j of kids.keys()) if (fixed[j] == null && free.indexOf(j) < 0) sizes[j] = Math.round(sizes[j]);
+    }
+    // Rounding leftovers go to the last child that is not folded.
+    let lastFlex = -1;
+    fixed.forEach((v, j) => { if (v == null) lastFlex = j; });
+    if (lastFlex >= 0) sizes[lastFlex] = Math.max(0, sizes[lastFlex] + full - g * (kids.length - 1) - sizes.reduce((a, v) => a + v, 0));
+    let pos = horiz ? x : y;
+    kids.forEach((i, j) => {
+      solve(n.k[i], horiz ? pos : x, horiz ? y : pos, horiz ? sizes[j] : w, horiz ? h : sizes[j], out, splits);
+      pos += sizes[j];
+      if (j < kids.length - 1) {
+        splits.push({ n, a: i, b: kids[j + 1], horiz, size: sizes[j], sb: sizes[j + 1],
+          ga: [i, ...(j === mi ? hidden : [])], gb: [kids[j + 1], ...(j + 1 === mi ? hidden : [])],
+          off: fixed[j] != null || fixed[j + 1] != null,
+          x: horiz ? pos : x, y: horiz ? y : pos, w: horiz ? g : w, h: horiz ? h : g });
+      }
+      pos += g;
+    });
+  }
+  const zOf = (id) => L.z.indexOf(id);
+  function layout() {
+    const W = tiles.clientWidth, H = tiles.clientHeight, g = gap();
+    const out = {}, splits = [];
+    if (W > 0 && H > 0) {
+      if (isZen() || narrow()) {
+        const w = Math.min(1040, W - 2 * g);
+        out.main = { x: Math.round((W - w) / 2), y: g, w, h: H - 2 * g };
+      } else {
+        solve(L.root, g, g, W - 2 * g, H - 2 * g, out, splits);
+        if (L.float) {
+          for (const id of Object.keys(out)) {
+            const f = L.fl[id];
+            if (!f) {
+              // Newly shown (a panel, the program, or a layout picked while floating): it starts
+              // where it would snap, on top of the others, and keeps that spot from now on.
+              const r = out[id];
+              L.fl[id] = [r.x / W, r.y / H, r.w / W, r.h / H].map((v) => Math.round(v * 10000) / 10000);
+              raise(id, true);
+            } else out[id] ={ x: Math.round(f[0] * W), y: Math.round(f[1] * H), w: Math.max(120, Math.round(f[2] * W)), h: Math.max(40, Math.round(f[3] * H)) };
+            if (folded(id)) out[id].h = headH(id);
+          }
+        }
+      }
+    }
+    RECTS = out;
+    SPLITS = L.float ? [] : splits;
+    document.body.classList.toggle("floating", !!L.float && !isZen() && !narrow());
+    for (const id of LEAVES) {
+      const el = leafEl(id), r = out[id];
+      el.classList.toggle("t-off", !r);
+      if (!r) continue;
+      const st = el.style;
+      st.left = `${r.x}px`; st.top = `${r.y}px`; st.width = `${r.w}px`; st.height = `${r.h}px`;
+      st.zIndex = L.float ? String(2 + Math.max(0, zOf(id) + 1)) : "";
+    }
+    paintSplits();
+    // Free-floating: the program (its own window, always on top) only shows while nothing above it overlaps it.
+    let covered = false;
+    const a = out.app;
+    if (L.float && a) {
+      covered = Object.entries(out).some(([k, r]) => k !== "app" && zOf(k) > zOf("app")
+        && r.x < a.x + a.w && r.x + r.w > a.x && r.y < a.y + a.h && r.y + r.h > a.y);
+    }
+    $("#appview").toggleAttribute("data-covered", covered);
+    window.dispatchEvent(new Event("brain:layout"));
+  }
+
+  // ---------- the lines between panels ----------
+  const splitEls = [];
+  function paintSplits() {
+    let i = 0;
+    for (const sp of SPLITS) {
+      const el = splitEls[i] || (splitEls[i] = makeSplit());
+      el.hidden = false;
+      el._sp = sp;
+      el.className = `split ${sp.horiz ? "v" : "h"}${sp.off ? " off" : ""}`;
+      el.setAttribute("aria-orientation", sp.horiz ? "vertical" : "horizontal");
+      el.setAttribute("aria-label", sp.horiz ? "Resize the panels on the left and right" : "Resize the panels above and below");
+      Object.assign(el.style, { left: `${sp.x}px`, top: `${sp.y}px`, width: `${sp.w}px`, height: `${sp.h}px` });
+      i++;
+    }
+    for (; i < splitEls.length; i++) splitEls[i].hidden = true;
+  }
+  function makeSplit() {
+    const el = h("div", { class: "split", role: "separator", tabindex: "0" });
+    el.addEventListener("pointerdown", (e) => {
+      const sp = el._sp;
+      if (e.button !== 0 || !sp || sp.off) return;
+      e.preventDefault();
+      const set = resizer(sp), p0 = sp.horiz ? e.clientX : e.clientY;
+      el.setPointerCapture(e.pointerId);
+      el.classList.add("drag");
+      document.body.classList.add("dragging");
+      const mv = (ev) => set((sp.horiz ? ev.clientX : ev.clientY) - p0);
+      const up = () => {
+        el.removeEventListener("pointermove", mv);
+        el.classList.remove("drag");
+        document.body.classList.remove("dragging");
+        changed();
+      };
+      el.addEventListener("pointermove", mv);
+      el.addEventListener("pointerup", up, { once: true });
+      el.addEventListener("pointercancel", up, { once: true });
+    });
+    el.addEventListener("keydown", (e) => {
+      const sp = el._sp;
+      if (!sp || sp.off) return;
+      const keys = sp.horiz ? { ArrowLeft: -24, ArrowRight: 24 } : { ArrowUp: -24, ArrowDown: 24 };
+      if (!(e.key in keys)) return;
+      e.preventDefault();
+      resizer(sp)(keys[e.key]);
+      changed();
+      el.focus();
+    });
+    tiles.append(el);
+    return el;
+  }
+  // Moving a line by d pixels: the two sides (and the program's hidden share, with the chat) scale.
+  function resizer(sp) {
+    const s0 = [...sp.n.s], total = sp.size + sp.sb;
+    const minA = Math.min(minOf(sp.n.k[sp.a], sp.horiz), total / 2), minB = Math.min(minOf(sp.n.k[sp.b], sp.horiz), total / 2);
+    return (d) => {
+      if (sp.size <= 0 || sp.sb <= 0) return;
+      const pa = Math.max(minA, Math.min(total - minB, sp.size + d));
+      const fa = pa / sp.size, fb = (total - pa) / sp.sb;
+      sp.n.s = s0.map((w, i) => r3(w * (sp.ga.includes(i) ? fa : sp.gb.includes(i) ? fb : 1)));
+      layout();
+    };
+  }
+
+  // ---------- moving a panel: drag it by its title ----------
+  const hint = h("div", { id: "drop-hint", hidden: true });
+  const ghost = h("div", { id: "move-ghost", hidden: true });
+  tiles.append(hint);
+  document.body.append(ghost);
+  function dropAt(px, py, id) {
+    const W = tiles.clientWidth, H = tiles.clientHeight, E = 22;
+    if (px < E) return { target: "*", side: "left" };
+    if (px > W - E) return { target: "*", side: "right" };
+    if (py < E) return { target: "*", side: "top" };
+    if (py > H - E) return { target: "*", side: "bottom" };
+    for (const [k, r] of Object.entries(RECTS)) {
+      if (k === id || px < r.x || px > r.x + r.w || py < r.y || py > r.y + r.h) continue;
+      const u = (px - r.x) / r.w, v = (py - r.y) / r.h;
+      const dist = { left: u, right: 1 - u, top: v, bottom: 1 - v };
+      const side = SIDES.slice().sort((p, q) => dist[p] - dist[q])[0];
+      return dist[side] > 0.3 ? { target: k, side: "swap" } : { target: k, side };
+    }
+    return null;
+  }
+  function paintHint(d) {
+    hint.hidden = !d;
+    if (!d) return;
+    const W = tiles.clientWidth, H = tiles.clientHeight, g = gap();
+    let r;
+    if (d.target === "*") {
+      const sw = Math.round(W * 0.22), sh = Math.round(H * 0.3);
+      r = { left: { x: g, y: g, w: sw, h: H - 2 * g }, right: { x: W - g - sw, y: g, w: sw, h: H - 2 * g }, top: { x: g, y: g, w: W - 2 * g, h: sh }, bottom: { x: g, y: H - g - sh, w: W - 2 * g, h: sh } }[d.side];
+    } else {
+      const t = RECTS[d.target];
+      r = d.side === "swap" ? t : { left: { ...t, w: t.w / 2 }, right: { ...t, x: t.x + t.w / 2, w: t.w / 2 }, top: { ...t, h: t.h / 2 }, bottom: { ...t, y: t.y + t.h / 2, h: t.h / 2 } }[d.side];
+    }
+    Object.assign(hint.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` });
+    hint.textContent = d.side === "swap" ? `Swap with ${leafName(d.target)}` : "";
+  }
+  function dropLeaf(id, d) {
+    if (!d || d.target === id) return;
+    if (d.side === "swap") L.root = swapIn(L.root, id, d.target);
+    else L.root = put(cut(L.root, id), id, d.target, d.side);
     changed();
+  }
+  function grab(e, id) {
+    if (e.button !== 0 || e.target.closest("button, input, textarea, select, a, label, [contenteditable], .rz")) return;
+    if ($(".panel.max") || isZen() || narrow()) return;
+    const x0 = e.clientX, y0 = e.clientY, r0 = { ...RECTS[id] };
+    if (L.float) raise(id);
+    let on = false, drop = null;
+    const box = tiles.getBoundingClientRect();
+    const mv = (ev) => {
+      const dx = ev.clientX - x0, dy = ev.clientY - y0;
+      if (!on) {
+        if (Math.hypot(dx, dy) < 5) return;
+        on = true;
+        getSelection()?.removeAllRanges();
+        document.body.classList.add("dragging", "moving");
+        leafEl(id).classList.add("lifted");
+        if (!L.float) { ghost.textContent = `Moving ${leafName(id)}`; ghost.hidden = false; }
+      }
+      if (L.float) { floatTo(id, { ...r0, x: r0.x + dx, y: r0.y + dy }, "move"); return; }
+      drop = dropAt(ev.clientX - box.left, ev.clientY - box.top, id);
+      paintHint(drop);
+      Object.assign(ghost.style, { left: `${ev.clientX + 14}px`, top: `${ev.clientY + 12}px` });
+    };
+    const end = (keep) => {
+      document.removeEventListener("pointermove", mv);
+      document.removeEventListener("pointerup", upH);
+      document.removeEventListener("pointercancel", cancelH);
+      document.removeEventListener("keydown", keyH, true);
+      if (!on) return;
+      document.body.classList.remove("dragging", "moving");
+      leafEl(id).classList.remove("lifted");
+      hint.hidden = true; ghost.hidden = true;
+      if (L.float) { if (!keep) floatTo(id, r0, "move"); save(); return; }
+      if (keep) dropLeaf(id, drop); else layout();
+    };
+    const upH = () => end(true), cancelH = () => end(false);
+    const keyH = (ev) => { if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); end(false); } };
+    document.addEventListener("pointermove", mv);
+    document.addEventListener("pointerup", upH);
+    document.addEventListener("pointercancel", cancelH);
+    document.addEventListener("keydown", keyH, true);
+  }
+
+  // ---------- free-floating panels ----------
+  function raise(id, quiet) {
+    if (L.z[L.z.length - 1] === id) return;
+    L.z = [...L.z.filter((x) => x !== id), id];
+    if (!quiet) { layout(); save(); }
+  }
+  tiles.addEventListener("pointerdown", (e) => {
+    const leaf = L.float && e.target.closest(".leaf");
+    if (leaf && !e.target.closest(".rz, .grab")) raise(leaf.dataset.leaf);
+  }, true);
+  // Edges within 8 px of another panel's edge (or the work area's) line up with it.
+  function snapEdges(id, r, mode, dir = "") {
+    const W = tiles.clientWidth, H = tiles.clientHeight, g = gap(), S = 8;
+    const xs = [g, W - g], ys = [g, H - g];
+    for (const [k, o] of Object.entries(RECTS)) if (k !== id) { xs.push(o.x - g, o.x, o.x + o.w, o.x + o.w + g); ys.push(o.y - g, o.y, o.y + o.h, o.y + o.h + g); }
+    const near = (v, list) => { let best = null; for (const c of list) if (Math.abs(c - v) <= S && (best == null || Math.abs(c - v) < Math.abs(best - v))) best = c; return best; };
+    if (mode === "move") {
+      const l = near(r.x, xs), rr = near(r.x + r.w, xs), t = near(r.y, ys), b = near(r.y + r.h, ys);
+      if (l != null) r.x = l; else if (rr != null) r.x = rr - r.w;
+      if (t != null) r.y = t; else if (b != null) r.y = b - r.h;
+    } else {
+      if (dir.includes("w")) { const l = near(r.x, xs); if (l != null) { r.w += r.x - l; r.x = l; } }
+      if (dir.includes("e")) { const rr = near(r.x + r.w, xs); if (rr != null) r.w = rr - r.x; }
+      if (dir.includes("n")) { const t = near(r.y, ys); if (t != null) { r.h += r.y - t; r.y = t; } }
+      if (dir.includes("s")) { const b = near(r.y + r.h, ys); if (b != null) r.h = b - r.y; }
+    }
+    return r;
+  }
+  function floatTo(id, r, mode, dir) {
+    const W = tiles.clientWidth, H = tiles.clientHeight;
+    r = snapEdges(id, { ...r }, mode, dir);
+    // Keep a piece of it on screen so it can always be grabbed again.
+    r.x = Math.max(60 - r.w, Math.min(W - 60, r.x));
+    r.y = Math.max(0, Math.min(H - 40, r.y));
+    L.fl[id] = [r.x / W, r.y / H, r.w / W, r.h / H].map((v) => Math.round(v * 10000) / 10000);
+    layout();
+  }
+  function resizeFloat(e, id, dir) {
+    if (e.button !== 0 || !L.float) return;
+    e.preventDefault(); e.stopPropagation();
+    raise(id);
+    const x0 = e.clientX, y0 = e.clientY, r0 = { ...RECTS[id] }, el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    document.body.classList.add("dragging");
+    const minW = MINW[id] || 140, minH = folded(id) ? headH(id) : 80;
+    const mv = (ev) => {
+      const dx = ev.clientX - x0, dy = ev.clientY - y0, r = { ...r0 };
+      if (dir.includes("e")) r.w = Math.max(minW, r0.w + dx);
+      if (dir.includes("s")) r.h = Math.max(minH, r0.h + dy);
+      if (dir.includes("w")) { r.w = Math.max(minW, r0.w - dx); r.x = r0.x + r0.w - r.w; }
+      if (dir.includes("n")) { r.h = Math.max(minH, r0.h - dy); r.y = r0.y + r0.h - r.h; }
+      floatTo(id, r, "size", dir);
+    };
+    const up = () => { el.removeEventListener("pointermove", mv); document.body.classList.remove("dragging"); save(); };
+    el.addEventListener("pointermove", mv);
+    el.addEventListener("pointerup", up, { once: true });
+    el.addEventListener("pointercancel", up, { once: true });
+  }
+  function setFloat(on) {
+    on = !!on;
+    if (on === !!L.float) return;
+    if (on) {
+      // Start from where everything is now.
+      const W = tiles.clientWidth || 1, H = tiles.clientHeight || 1;
+      L.fl = {};
+      for (const [id, r] of Object.entries(RECTS)) L.fl[id] = [r.x / W, r.y / H, r.w / W, r.h / H].map((v) => Math.round(v * 10000) / 10000);
+    }
+    L.float = on;
+    render();
+    save();
+    toast(on ? "Free-floating panels: drag a title to move, drag an edge or corner to resize." : "Panels snap into place again.", "ok");
   }
 
   // ---------- render ----------
-  function place(dock, wanted) {
-    // Only move nodes that are out of place, so panels keep their scroll position and focus.
-    for (let i = 0; i < wanted.length; i++) if (dock.children[i] !== wanted[i]) dock.insertBefore(wanted[i], dock.children[i] || null);
-    while (dock.children.length > wanted.length) {
-      const extra = dock.lastElementChild;
-      if (extra.classList.contains("hsplit")) extra.remove(); else $("#panel-store").append(extra);
-    }
-  }
-  const splitPool = [];
   function render() {
-    const store0 = $("#panel-store");
-    const used = new Set();
-    for (const side of ["left", "right"]) {
-      const dock = $(`#dock-${side}`);
-      const items = L[side].items.filter(usable);
-      items.forEach((id) => used.add(id));
-      const wanted = [];
-      items.forEach((id, i) => {
-        if (i) {
-          const prev = items[i - 1];
-          let sp = [...dock.children].find((c) => c.classList.contains("hsplit") && c.dataset.a === prev && c.dataset.b === id);
-          if (!sp) sp = splitPool.pop() || makeHsplit();
-          sp.dataset.a = prev; sp.dataset.b = id;
-          sp.classList.toggle("off", L.collapsed.includes(prev) || L.collapsed.includes(id));
-          wanted.push(sp);
-        }
-        wanted.push(panelEl(id));
-      });
-      place(dock, wanted);
-      dock.hidden = !items.length;
-      $(`.vsplit[data-side="${side}"]`).hidden = !items.length;
-      dock.style.setProperty("--w", `${L[side].w}px`);
-    }
     for (const id of IDS) {
-      const el = panelEl(id);
-      if (!used.has(id) && el.parentNode !== store0) store0.append(el);
-      el.style.setProperty("--f", String(L.sizes[id] || PANELS[id].f));
-      el.classList.toggle("collapsed", L.collapsed.includes(id));
+      const shown = isShown(id);
+      panelEl(id).classList.toggle("collapsed", L.collapsed.includes(id));
       const b = railBtns[id];
       b.hidden = !usable(id);
-      b.classList.toggle("on", used.has(id));
-      b.setAttribute("aria-pressed", String(used.has(id)));
+      b.classList.toggle("on", shown);
+      b.setAttribute("aria-pressed", String(shown));
     }
     for (const b of $$("#presets [data-preset]")) b.setAttribute("aria-pressed", String(b.dataset.preset === L.preset));
     $('#presets [data-preset="mine"]').hidden = !L.mine;
+    const fl = $("#set-float");
+    if (fl) fl.checked = !!L.float;
+    layout();
     if (isShown("discord")) discordWanted();
     musicSoon();
     if (isShown("usage")) paintUsagePanel();
   }
-
-  // ---------- splitters ----------
-  function makeHsplit() {
-    const sp = h("div", { class: "hsplit", role: "separator", "aria-orientation": "horizontal", tabindex: "0", "aria-label": "Resize the panels above and below" });
-    sp.addEventListener("pointerdown", (e) => hDrag(e, sp));
-    sp.addEventListener("keydown", (e) => {
-      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-      e.preventDefault();
-      nudgeH(sp, e.key === "ArrowUp" ? -24 : 24);
-    });
-    return sp;
-  }
-  function weights(sp) {
-    const a = panelEl(sp.dataset.a), b = panelEl(sp.dataset.b);
-    return { a, b, fa: L.sizes[sp.dataset.a] || PANELS[sp.dataset.a].f, fb: L.sizes[sp.dataset.b] || PANELS[sp.dataset.b].f, ha: a.getBoundingClientRect().height, hb: b.getBoundingClientRect().height };
-  }
-  function setPair(sp, w, newHa) {
-    const total = w.ha + w.hb, sum = w.fa + w.fb;
-    const ha = Math.max(60, Math.min(total - 60, newHa));
-    const fa = Math.round((sum * ha / total) * 1000) / 1000;
-    L.sizes[sp.dataset.a] = fa;
-    L.sizes[sp.dataset.b] = Math.round((sum - fa) * 1000) / 1000;
-    w.a.style.setProperty("--f", String(L.sizes[sp.dataset.a]));
-    w.b.style.setProperty("--f", String(L.sizes[sp.dataset.b]));
-  }
-  function nudgeH(sp, dy) {
-    if (sp.classList.contains("off")) return;
-    const w = weights(sp);
-    setPair(sp, w, w.ha + dy);
-    L.preset = ""; render(); save();
-  }
-  function hDrag(e, sp) {
-    if (e.button !== 0 || sp.classList.contains("off")) return;
-    e.preventDefault();
-    const w = weights(sp), y0 = e.clientY;
-    sp.setPointerCapture(e.pointerId);
-    sp.classList.add("drag");
-    document.body.classList.add("dragging");
-    const mv = (ev) => setPair(sp, w, w.ha + ev.clientY - y0);
-    const up = () => {
-      sp.removeEventListener("pointermove", mv);
-      sp.classList.remove("drag");
-      document.body.classList.remove("dragging");
-      L.preset = ""; render(); save();
-    };
-    sp.addEventListener("pointermove", mv);
-    sp.addEventListener("pointerup", up, { once: true });
-    sp.addEventListener("pointercancel", up, { once: true });
-  }
-  function clampW(side, w) {
-    const other = side === "left" ? "right" : "left";
-    const otherW = $(`#dock-${other}`).hidden ? 0 : L[other].w;
-    const max = Math.max(200, Math.min(window.innerWidth * 0.46, window.innerWidth - otherW - 440));
-    return Math.round(Math.max(200, Math.min(max, w)));
-  }
-  for (const vs of $$(".vsplit")) {
-    const side = vs.dataset.side;
-    vs.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      const x0 = e.clientX, w0 = L[side].w, dock = $(`#dock-${side}`);
-      vs.setPointerCapture(e.pointerId);
-      vs.classList.add("drag");
-      document.body.classList.add("dragging");
-      const mv = (ev) => { L[side].w = clampW(side, w0 + (side === "left" ? 1 : -1) * (ev.clientX - x0)); dock.style.setProperty("--w", `${L[side].w}px`); };
-      const up = () => { vs.removeEventListener("pointermove", mv); vs.classList.remove("drag"); document.body.classList.remove("dragging"); L.preset = ""; render(); save(); };
-      vs.addEventListener("pointermove", mv);
-      vs.addEventListener("pointerup", up, { once: true });
-      vs.addEventListener("pointercancel", up, { once: true });
-    });
-    vs.addEventListener("keydown", (e) => {
-      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-      e.preventDefault();
-      const grow = (e.key === "ArrowRight") === (side === "left");
-      L[side].w = clampW(side, L[side].w + (grow ? 24 : -24));
-      L.preset = ""; render(); save();
-    });
-  }
+  new ResizeObserver(() => layout()).observe(tiles);
+  new MutationObserver(() => layout()).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+  new MutationObserver(() => layout()).observe($("#appview"), { attributes: true, attributeFilter: ["hidden"] });
+  new MutationObserver(() => layout()).observe(root, { attributes: true, attributeFilter: ["data-density"] });
+  $("#set-float")?.addEventListener("change", (e) => setFloat(e.currentTarget.checked));
 
   // ---------- menus ----------
   const menu = $("#menu");
@@ -283,7 +650,9 @@
     for (const it of items) {
       if (it === "-") { menu.append(h("hr")); continue; }
       if (it.header) { menu.append(h("div", { class: "menu-h", text: it.header })); continue; }
-      const b = h("button", { type: "button", role: it.checked == null ? "menuitem" : "menuitemcheckbox", disabled: !!it.disabled }, it.icon ? icon(it.icon) : null, h("span", { text: it.label }));
+      const b = h("button", { type: "button", role: it.checked == null ? "menuitem" : "menuitemcheckbox", disabled: !!it.disabled },
+        it.swatch ? h("span", { class: `menu-sw sw-${it.swatch}` }) : it.icon ? icon(it.icon) : null, h("span", { text: it.label }));
+      if (it.value) b.dataset.value = it.value;
       if (it.checked != null) b.setAttribute("aria-checked", String(!!it.checked));
       b.addEventListener("click", () => { closeMenu(); it.run(); });
       menu.append(b);
@@ -307,20 +676,40 @@
   window.addEventListener("resize", closeMenu);
   window.addEventListener("blur", closeMenu);
 
+  // The leaf right above or below this one on screen (overlapping it sideways).
+  function neighbour(id, dir) {
+    const r = RECTS[id];
+    if (!r) return null;
+    let best = null, bestD = Infinity;
+    for (const [k, o] of Object.entries(RECTS)) {
+      if (k === id || Math.min(r.x + r.w, o.x + o.w) - Math.max(r.x, o.x) < 20) continue;
+      const d = dir < 0 ? r.y - (o.y + o.h) : o.y - (r.y + r.h);
+      if (d >= -2 && d < bestD) { best = k; bestD = d; }
+    }
+    return best;
+  }
   function panelMenu(id, anchor) {
-    const side = sideOf(id), list = L[side].items.filter(usable), i = list.indexOf(id);
-    const coll = L.collapsed.includes(id);
+    const coll = L.collapsed.includes(id), up = neighbour(id, -1), down = neighbour(id, 1);
+    const fl = !!L.float;
     openMenu(anchor, [
       { label: coll ? "Expand" : "Collapse to its title", icon: coll ? "down" : "up", run: () => toggleCollapse(id) },
       { label: "Make bigger (Esc to go back)", icon: "max", run: () => B.toggleMax(panelEl(id), true) },
       "-",
-      { label: "Move up", icon: "up", disabled: i <= 0, run: () => move(id, -1) },
-      { label: "Move down", icon: "down", disabled: i >= list.length - 1, run: () => move(id, 1) },
-      { label: side === "left" ? "Move to the right side" : "Move to the left side", icon: side === "left" ? "right" : "left", run: () => moveSide(id) },
+      { label: "Move up", icon: "up", disabled: fl || !up, run: () => move(id, -1) },
+      { label: "Move down", icon: "down", disabled: fl || !down, run: () => move(id, 1) },
+      { label: "Move to the left side", icon: "left", disabled: fl || onSide(id, "left"), run: () => moveSide(id, "left") },
+      { label: "Move to the right side", icon: "right", disabled: fl || onSide(id, "right"), run: () => moveSide(id, "right") },
       "-",
       { label: "Hide this panel", icon: "x", run: () => hide(id) },
     ]);
   }
+  // Quick theme picker in the top bar.
+  $("#btn-theme").addEventListener("click", (e) => {
+    const now = B.S.settings?.theme;
+    openMenu(e.currentTarget, [{ header: "Theme" }, ...B.THEMES.map((t) => ({
+      label: B.THEME_NAMES[t] || t, swatch: t, value: t, checked: now === t, run: () => B.saveSetting({ theme: t }),
+    })), "-", { label: "More in Settings…", icon: "gear", run: B.openSettings }]);
+  });
   $("#btn-layout").addEventListener("click", (e) => {
     const items = [{ header: "Layouts" }];
     for (const [k, name] of Object.entries(PRESET_NAMES)) {
@@ -328,6 +717,7 @@
       items.push({ label: name, checked: L.preset === k, run: () => preset(k) });
     }
     items.push({ label: "Save this layout as Mine", icon: "bookmark", run: saveMine });
+    items.push({ label: "Free-floating panels", checked: !!L.float, run: () => setFloat(!L.float) });
     items.push("-", { header: "Panels" });
     for (const id of IDS) if (usable(id)) items.push({ label: PANELS[id].label, checked: isShown(id), run: () => (isShown(id) ? hide(id) : show(id)) });
     openMenu(e.currentTarget, items);
@@ -336,8 +726,7 @@
   function preset(name) {
     const next = fromPreset(name, L);
     if (!next) { toast("Save a layout as Mine first (Layout menu)."); return; }
-    next.home = L.home;
-    if (document.body.classList.contains("zen")) B.setZen(false);
+    if (isZen()) B.setZen(false);
     const max = $(".panel.max");
     if (max) B.toggleMax(max, false);
     L = next;
@@ -345,7 +734,7 @@
     save();
   }
   function saveMine() {
-    L.mine = { left: { ...L.left, items: [...L.left.items] }, right: { ...L.right, items: [...L.right.items] }, sizes: { ...L.sizes }, collapsed: [...L.collapsed] };
+    L.mine = { root: clone(L.root), collapsed: [...L.collapsed], fl: clone(L.fl || {}) };
     L.preset = "mine";
     render();
     save();
@@ -459,13 +848,59 @@
     $("#u-quota").textContent = q
       ? `Gemini's ${q.what || "picture"} limit was reached ${new Date(q.t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: !B.S.settings?.clock24 })}${q.resets ? ` (it said: resets in ${q.resets})` : ""}.`
       : "Google does not show Gemini's limits to apps, so these are counted on this PC.";
+    paintChatGPT();
+    const v = stats.videoUse || { all: 0, today: 0, seconds: 0 };
+    $("#u-video").hidden = !v.all;
+    $("#u-video").textContent = `Videos (Google Veo): ${v.today} today · ${v.all} all time · ${v.seconds} seconds of video in total. Google charges for these on your own key.`;
     paintChart();
+  }
+  // ChatGPT: requests and tokens counted on this PC, plus the plan limits ChatGPT itself last reported.
+  const winName = (mins, fallback) => (mins === 300 ? "5-hour limit" : mins === 10080 ? "Weekly limit"
+    : !mins ? fallback : mins < 1440 ? `${Math.round(mins / 60)}-hour limit` : `${Math.round(mins / 1440)}-day limit`);
+  function chatgptWindows() {
+    const l = stats?.chatgptUse?.limits;
+    const live = (w) => (w && typeof w.pct === "number" ? { ...w, over: !!w.resets && w.resets * 1000 < Date.now() } : null);
+    return { t: l?.t || 0, short: live(l?.short), long: live(l?.long) };
+  }
+  function paintChatGPT() {
+    const c = stats.chatgptUse;
+    if (!c) return;
+    const tb = $("#u-chatgpt tbody");
+    for (const k of ["today", "all"]) {
+      const b = c[k];
+      row(tb, k, [fmtN(b.calls), fmtN(b.failed), b.in ? fmtN(b.in) : "–", b.out ? fmtN(b.out) : "–"],
+        ["", "", b.in ? `${b.in.toLocaleString()} tokens sent, ${(b.cached || 0).toLocaleString()} of them read from cache` : "", b.out ? `${b.out.toLocaleString()} tokens` : ""]);
+    }
+    const w = chatgptWindows();
+    for (const [key, fallback] of [["short", "5-hour limit"], ["long", "Weekly limit"]]) {
+      const x = w[key], num = $(`#uc-${key}`), bar = $(`#uc-${key}-bar`), note = $(`#uc-${key}-note`);
+      $(`#uc-${key}-name`).textContent = winName(x?.mins, fallback);
+      if (!x || x.over) {
+        num.textContent = "–"; bar.style.width = "0"; bar.className = "";
+        note.textContent = x?.over ? "This limit has started again since ChatGPT was last asked" : key === "short" ? "Shown after ChatGPT is asked once" : "";
+        continue;
+      }
+      num.textContent = `${Math.round(x.pct)}% used`;
+      bar.style.width = `${x.pct}%`;
+      bar.className = x.pct >= 90 ? "bad" : x.pct >= 70 ? "warn" : "";
+      note.textContent = resetText(x.resets);
+      if (x.pct >= 90 && !warned[`chatgpt-${key}`] && !B.S.replaying) {
+        warned[`chatgpt-${key}`] = 1;
+        toast(`You have used ${Math.round(x.pct)}% of your ChatGPT ${winName(x.mins, fallback).toLowerCase()}. ${resetText(x.resets)}.`, "err", 8000);
+      }
+    }
+    const when = w.t ? new Date(w.t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: !B.S.settings?.clock24 }) : "";
+    $("#u-chatgpt-note").textContent = B.S.settings && !B.S.settings.chatgptEnabled && !c.all.calls
+      ? "ChatGPT is switched off. You can turn it on in Settings."
+      : w.short || w.long
+        ? `Limits as ChatGPT last reported them (${when}). They update each time ChatGPT is asked. Requests and tokens are counted on this PC.`
+        : "Requests and tokens are counted on this PC. The limit bars appear after ChatGPT is asked once.";
   }
   function paintChart() {
     const box = $("#u-chart"), days = stats?.days || [];
     const max = Math.max(1, ...days.map((d) => d.tasks));
     const cols = days.map((d) => {
-      const col = h("div", { class: "col", "data-day": d.day, "data-tasks": String(d.tasks), "data-gemini": String(d.gemini) });
+      const col = h("div", { class: "col", "data-day": d.day, "data-tasks": String(d.tasks), "data-gemini": String(d.gemini), "data-chatgpt": String(d.chatgpt || 0) });
       if (d.tasks) { const bar = h("i"); bar.style.height = `${Math.max(4, (d.tasks / max) * 100)}%`; col.append(bar); }
       return col;
     });
@@ -484,9 +919,10 @@
     const col = e.target.closest(".col");
     if (!col) { tip.hidden = true; return; }
     const d = new Date(`${col.dataset.day}T12:00`);
-    const t = Number(col.dataset.tasks), gm = Number(col.dataset.gemini);
+    const t = Number(col.dataset.tasks), gm = Number(col.dataset.gemini), cg = Number(col.dataset.chatgpt) || 0;
     tip.replaceChildren(h("div", { text: d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }) }),
-      h("div", {}, h("b", { text: String(t) }), ` task${t === 1 ? "" : "s"} · `, h("b", { text: String(gm) }), ` Gemini request${gm === 1 ? "" : "s"}`));
+      h("div", {}, h("b", { text: String(t) }), ` task${t === 1 ? "" : "s"} · `, h("b", { text: String(gm) }), ` Gemini request${gm === 1 ? "" : "s"}`,
+        ...(cg ? [" · ", h("b", { text: String(cg) }), ` ChatGPT request${cg === 1 ? "" : "s"}`] : [])));
     tip.hidden = false;
     const r = tip.getBoundingClientRect();
     tip.style.left = `${Math.max(8, Math.min(e.clientX - r.width / 2, window.innerWidth - r.width - 8))}px`;
@@ -507,12 +943,16 @@
     }
     if (stats) {
       const t = stats.geminiUse.today;
-      $("#sb-gemini").textContent = `Gemini ${t.calls} today${t.pictures ? ` · ${t.pictures} pic` : ""}`;
+      $("#sb-gemini").textContent = `Gemini ${t.calls} today${t.pictures ? ` · ${t.pictures} pic` : ""}${stats.videoUse?.today ? ` · ${stats.videoUse.today} video` : ""}`;
+      const c = stats.chatgptUse, wk = chatgptWindows().long;
+      $("#sb-chatgpt").hidden = !c || !(s?.chatgptEnabled || c.today.calls);
+      if (c) $("#sb-chatgpt").textContent = `ChatGPT ${c.today.calls} today${wk && !wk.over ? ` · week ${Math.round(wk.pct)}%` : ""}`;
     }
   }
   new MutationObserver(paintStatusBar).observe($("#phase-label"), { childList: true, characterData: true, subtree: true });
   $("#usage").addEventListener("click", () => show("usage"));
   $("#sb-gemini").addEventListener("click", () => show("usage"));
+  $("#sb-chatgpt").addEventListener("click", () => show("usage"));
   $("#sb-brain").addEventListener("click", () => show("activity"));
   $("#sb-model").addEventListener("click", B.openSettings);
   $("#sb-track").addEventListener("click", () => show("music"));
@@ -770,6 +1210,231 @@
   $("#discord-back").addEventListener("click", () => discordWindows("back"));
   paintDiscord();
 
+  // ---------- a program in the middle (Blender, Godot, Chrome, ...) ----------
+  // The desktop window keeps the program's own window on #av-slot. This page only says where the
+  // slot is and whether the program may show there. It never sees program paths: only the ids of
+  // programs picked in the Windows file picker, and window numbers from the list it was shown.
+  const AP = { pins: [], docked: null, starting: "", busy: false, wins: null };
+  const FLOW = { id: "builtin-flow", name: "Google Flow", url: "https://labs.google/fx/tools/flow" };
+  const AP_WHY = {
+    "not-a-program": "Pick a program (.exe) or a shortcut to one.",
+    "bad-shortcut": "That shortcut could not be read.",
+    discord: "Discord opens from the Discord panel, not here.",
+    "ai-brain": "AI Brain cannot be shown inside itself.",
+    "too-many": "Up to 24 programs can be added.",
+    "not-found": "That program is no longer on this PC. Remove it and add it again.",
+    "no-pin": "That program was removed.",
+    "no-window": "The program's window did not appear. If it opened, use “Use a window that is open”.",
+    "flow-window": "Google Flow's window did not appear. If it opened in your browser, you can use it there.",
+    admin: "That program runs as administrator, so AI Brain cannot move it. Open it normally and try again.",
+    gone: "That window is closed now.",
+    "not-a-main-window": "That window cannot be moved into AI Brain.",
+    busy: "Still working on the last one…",
+    "helper-stopped": "The window helper stopped. Try again.",
+    "no-answer": "The program did not answer. It may be busy; try again.",
+  };
+  const apWhy = (r, fallback) => { if (r?.why !== "canceled") toast(AP_WHY[r?.why] || fallback, "err", 7000); };
+  const appCovered = () => !!document.querySelector("dialog[open]") || !$("#menu").hidden
+    || !!document.querySelector(".panel.max") || document.body.classList.contains("zen")
+    || !$("#drop").hidden || !$("#closed").hidden // the whole-page "drop files" and "closed" screens
+    || document.body.classList.contains("moving") // a panel is being dragged: show where it can go
+    || $("#appview").hasAttribute("data-covered"); // free-floating: a panel lies over the program
+
+  let slotKey = "", slotRaf = 0;
+  function slotSoon() { if (shell?.apps && !slotRaf) slotRaf = requestAnimationFrame(sendSlot); }
+  function sendSlot() {
+    slotRaf = 0;
+    const r = $("#av-slot").getBoundingClientRect();
+    const covered = appCovered();
+    const show = !!AP.docked && !$("#appview").hidden && r.width > 40 && r.height > 40 && !covered;
+    paintAppNote(covered);
+    const s = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), show };
+    const key = JSON.stringify(s);
+    if (key === slotKey) return;
+    slotKey = key;
+    shell.apps("slot", s).catch(() => {});
+  }
+  function paintAppNote(covered) {
+    const name = AP.docked?.name || AP.starting || "The program";
+    $("#av-note-title").textContent = AP.docked ? (covered ? `${name} is behind AI Brain` : `${name} is here`) : `Starting ${name}…`;
+    $("#av-note-text").textContent = AP.docked
+      ? (covered ? "It comes back when you close the window or menu that is open." : "If you cannot see it, press “Use it”.")
+      : "Big programs can take a little while to open.";
+  }
+
+  let pinsKey = "";
+  function paintApps() {
+    const has = !!shell?.apps;
+    const on = !!(AP.docked || AP.starting);
+    $("#appview").hidden = !on;
+    document.body.classList.toggle("has-app", on);
+    $("#av-name").textContent = AP.docked?.name || AP.starting || "Program";
+    $("#av-title").textContent = AP.docked?.title && AP.docked.title !== AP.docked.name ? AP.docked.title : "";
+    $("#av-front").disabled = $("#av-back").disabled = !AP.docked;
+    $("#apps-add").disabled = !has || AP.busy;
+    $("#apps-windows").disabled = !has || AP.busy;
+    $("#apps-back").hidden = !AP.docked;
+    {
+      const here = AP.docked?.pin === FLOW.id;
+      $("#apps-flow-row").classList.toggle("on", here);
+      $("#apps-flow").disabled = has && AP.busy;
+      $("#apps-flow").title = !has ? "Open Google Flow in your browser" : here ? "Google Flow is in the middle" : "Open Google Flow in the middle";
+      $("#apps-flow-kind").textContent = here ? "In the middle now" : AP.starting === FLOW.name ? "Opening…" : has ? "Google's video maker" : "Google's video maker · opens in your browser";
+    }
+    $("#apps-note").hidden = has && AP.pins.length > 0;
+    $("#apps-note-title").textContent = has ? "Show a program in the middle" : "Only in the desktop window";
+    $("#apps-note-text").textContent = has
+      ? "Press + and pick a program, like Blender, Godot or Chrome. A click on it opens it in the middle of AI Brain, where you can use it and watch it change."
+      : "Programs can be shown in the middle only in the AI Brain desktop window. Open AI Brain from its desktop shortcut.";
+    const key = JSON.stringify([AP.pins, AP.busy, AP.docked?.pin || "", AP.starting]);
+    if (key !== pinsKey) {
+      pinsKey = key;
+      const ul = $("#apps-pins");
+      ul.replaceChildren();
+      for (const p of AP.pins) {
+        const here = AP.docked?.pin === p.id;
+        const li = document.createElement("li"); li.className = "dc-chat" + (here ? " on" : "");
+        const open = document.createElement("button"); open.type = "button"; open.className = "dc-open"; open.disabled = AP.busy || !has;
+        open.title = here ? `${p.name} is in the middle` : `Open ${p.name} in the middle`;
+        let pic;
+        if (p.icon && /^data:image\/png;base64,/.test(p.icon)) { pic = document.createElement("img"); pic.className = "ap-icon"; pic.alt = ""; pic.src = p.icon; }
+        else { pic = document.createElement("span"); pic.className = "dc-ava"; pic.textContent = [...p.name.trim()][0]?.toUpperCase() || "#"; }
+        pic.setAttribute("aria-hidden", "true");
+        const text = document.createElement("span"); text.className = "dc-text";
+        const name = document.createElement("span"); name.className = "dc-name"; name.dir = "auto"; name.textContent = p.name;
+        const kind = document.createElement("span"); kind.className = "dc-kind";
+        kind.textContent = !p.found ? "Not found on this PC" : here ? "In the middle now" : AP.starting === p.name ? "Opening…" : "Program";
+        text.append(name, kind); open.append(pic, text);
+        open.addEventListener("click", () => openApp(p));
+        const del = document.createElement("button"); del.type = "button"; del.className = "icon-btn dc-del";
+        del.title = `Remove ${p.name}`; del.setAttribute("aria-label", `Remove ${p.name}`);
+        del.innerHTML = '<svg class="i"><use href="#i-x"/></svg>';
+        del.addEventListener("click", () => removeApp(p));
+        li.append(open, del); ul.append(li);
+      }
+    }
+    slotSoon();
+  }
+  async function appsCall(what, arg) {
+    try { return await shell.apps(what, arg); } catch { return { ok: false }; }
+  }
+  async function refreshApps() {
+    if (!shell?.apps) { paintApps(); return; }
+    const r = await appsCall("state");
+    if (r?.ok) { AP.pins = Array.isArray(r.pins) ? r.pins : []; AP.docked = r.docked || null; }
+    paintApps();
+  }
+  async function openApp(p) {
+    if (AP.busy || !shell?.apps) return;
+    if (AP.docked?.pin === p.id) { appsCall("front"); return; }
+    AP.busy = true; AP.starting = p.name; paintApps();
+    const r = await appsCall("open", p.id);
+    AP.busy = false; AP.starting = "";
+    if (!r?.ok) apWhy(r, `Could not open ${p.name}.`);
+    await refreshApps();
+  }
+  // Google Flow has no way in for other programs: it opens as a browser window of its own, shown
+  // in the middle (desktop window) or in a new tab (plain browser). You sign in to Google there.
+  // byBrain: the brain asked for it (it waits for the window). signIn: open without the brain's
+  // control port, only to sign in to Google when Google refuses the sign-in otherwise.
+  async function openFlow(byBrain = false, signIn = false) {
+    if (byBrain === true && !shell?.apps) return;
+    if (!shell?.apps) { window.open(FLOW.url, "_blank", "noopener"); return; }
+    if (AP.busy) { if (byBrain !== true) toast(AP_WHY.busy); return; }
+    if (AP.docked?.pin === FLOW.id && !signIn) { appsCall("front"); return; }
+    if (byBrain === true) toast("The brain is opening Google Flow.", "ok");
+    AP.busy = true; AP.starting = FLOW.name; paintApps();
+    const r = await appsCall(signIn ? "flow-signin" : "flow");
+    AP.busy = false; AP.starting = "";
+    if (r?.ok && r.outside) toast("Google Flow opened in your browser.", "ok");
+    else if (!r?.ok) apWhy(r, "Could not open Google Flow.");
+    await refreshApps();
+  }
+  async function removeApp(p) {
+    if (AP.busy) return;
+    const r = await appsCall("remove", p.id);
+    if (r?.ok) { AP.pins = r.pins || []; toast(`Removed ${p.name}.`, "ok"); }
+    paintApps();
+  }
+  async function appBack() {
+    if (!AP.docked) { toast("No program is in the middle."); return; }
+    const name = AP.docked.name;
+    const r = await appsCall("release");
+    if (r?.ok) toast(`${name} went back where it was.`, "ok");
+    await refreshApps();
+  }
+  $("#apps-flow").addEventListener("click", openFlow);
+  $("#apps-add").addEventListener("click", async () => {
+    if (AP.busy || !shell?.apps) return;
+    AP.busy = true; paintApps();
+    const r = await appsCall("add");
+    AP.busy = false;
+    if (Array.isArray(r?.pins)) AP.pins = r.pins;
+    if (r?.ok) { const p = AP.pins.find((x) => x.id === r.id); toast(`Added ${p?.name || "the program"}. Click it to open it in the middle.`, "ok"); }
+    else apWhy(r, "Could not add that program.");
+    paintApps();
+  });
+  function paintWins() {
+    const ul = $("#apps-wins");
+    ul.hidden = !AP.wins;
+    $("#apps-windows").setAttribute("aria-expanded", String(!!AP.wins));
+    $("#apps-windows").classList.toggle("on", !!AP.wins);
+    ul.replaceChildren();
+    if (!AP.wins) return;
+    if (!AP.wins.length) {
+      const li = document.createElement("li"); li.className = "ap-none"; li.textContent = "No other windows are open."; ul.append(li); return;
+    }
+    for (const w of AP.wins) {
+      const li = document.createElement("li"); li.className = "dc-chat";
+      const b = document.createElement("button"); b.type = "button"; b.className = "dc-open"; b.title = `Show “${w.title}” in the middle`;
+      const text = document.createElement("span"); text.className = "dc-text";
+      const name = document.createElement("span"); name.className = "dc-name"; name.dir = "auto"; name.textContent = w.title;
+      const kind = document.createElement("span"); kind.className = "dc-kind"; kind.textContent = w.min ? `${w.app} · minimized` : w.app;
+      text.append(name, kind); b.append(text);
+      b.addEventListener("click", () => dockWin(w));
+      li.append(b); ul.append(li);
+    }
+  }
+  async function dockWin(w) {
+    if (AP.busy) return;
+    AP.busy = true; AP.wins = null; paintWins(); paintApps();
+    const r = await appsCall("dock", w.hwnd);
+    AP.busy = false;
+    if (!r?.ok) apWhy(r, "Could not move that window.");
+    await refreshApps();
+  }
+  $("#apps-windows").addEventListener("click", async () => {
+    if (AP.wins) { AP.wins = null; paintWins(); return; }
+    if (AP.busy || !shell?.apps) return;
+    const r = await appsCall("windows");
+    if (!r?.ok) { apWhy(r, "Could not list the open windows."); return; }
+    AP.wins = Array.isArray(r.windows) ? r.windows : [];
+    paintWins();
+  });
+  $("#apps-back").addEventListener("click", appBack);
+  $("#av-back").addEventListener("click", appBack);
+  $("#av-front").addEventListener("click", () => appsCall("front"));
+  shell?.onApps?.((m) => {
+    if (m.ev === "starting") AP.starting = String(m.name || "");
+    else if (m.ev === "docked") { AP.docked = { name: String(m.name || "Program"), title: String(m.title || ""), pin: String(m.pin || "") }; AP.starting = ""; }
+    else if (m.ev === "closed") { AP.docked = null; toast(`${m.name || "The program"} was closed.`); }
+    else if (m.ev === "moved-away") { AP.docked = null; toast(`${m.name || "The program"} was moved out of AI Brain. It stays where you put it.`, "", 6000); }
+    else if (m.ev === "released") AP.docked = null;
+    paintApps();
+  });
+
+  // Keep the program on the slot, and behind AI Brain while a dialog, menu or big panel is open.
+  new ResizeObserver(slotSoon).observe($("#av-slot"));
+  window.addEventListener("resize", slotSoon);
+  window.addEventListener("brain:layout", slotSoon); // panels moved or resized (a size watcher misses a pure move)
+  new MutationObserver((list) => {
+    for (const m of list) {
+      const t = m.target;
+      if (t === document.body || t.tagName === "DIALOG" || t.id === "menu" || t.id === "drop" || t.id === "closed" || t.classList?.contains("panel")) { slotSoon(); return; }
+    }
+  }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ["open", "hidden", "class"] });
+  refreshApps();
+
   // ---------- full screen and the desktop window ----------
   function fullscreen() {
     if (shell?.toggleFullscreen) { shell.toggleFullscreen(); return; }
@@ -805,7 +1470,9 @@
   // ---------- hooks called from app.js ----------
   let firstSettings = true;
   window.Station = {
-    preset, saveMine, show, hide, fullscreen,
+    preset, saveMine, show, hide, fullscreen, appBack, setFloat, move, moveSide, openFlow, hasShell: () => !!shell?.apps,
+    // For tests and the palette: the layout tree and where everything is drawn (pixels inside #tiles).
+    layout: () => ({ root: clone(L.root), rects: clone(RECTS), splits: SPLITS.map((s) => ({ x: s.x, y: s.y, w: s.w, h: s.h, horiz: s.horiz, off: s.off })), float: !!L.float, preset: L.preset, collapsed: [...L.collapsed], saved: clone(L) }),
     mode: (m) => setMode(m),
     currentMode: () => mode,
     music: (cmd) => musicCmd(cmd),
@@ -833,9 +1500,9 @@
         case "usage": paintMeters(); break;
         case "busy": paintStatusBar(); break;
         case "final": statsSoon(); break;
-        case "reply": if (ev.from === "gemini" || ev.who === "gemini") statsSoon(); break;
+        case "reply": statsSoon(); break;
         case "task": if (!B.S.replaying) statsSoon(); break;
-        case "media": statsSoon(); break;
+        case "media": case "video_state": statsSoon(); break;
         default: break;
       }
     },

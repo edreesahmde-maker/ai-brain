@@ -17,6 +17,17 @@
     set(k, v) { try { localStorage.setItem(`brain.${k}`, JSON.stringify(v)); } catch { /* storage unavailable */ } },
   };
 
+  // "What's new" is shown once to someone who used an older version here, never on a first start.
+  const NEWS = 3.1;
+  const newsDue = (() => {
+    try {
+      const used = Object.keys(localStorage).some((k) => k.startsWith("brain."));
+      const seen = Number(store.get("news", 0)) || 0;
+      if (!used) store.set("news", NEWS);
+      return used && seen < NEWS;
+    } catch { return false; }
+  })();
+
   function svgUse(id, cls) {
     const s = document.createElementNS(SVG_NS, "svg");
     s.setAttribute("class", cls);
@@ -73,7 +84,7 @@
   // ---------- state ----------
   const S = {
     settings: null, status: null, session: { id: "", title: "" }, replaying: false,
-    busy: false, phase: "idle", queue: [], direct: { chatgpt: false, gemini: false },
+    busy: false, phase: "idle", queue: [], direct: { chatgpt: false, gemini: false, video: false },
     media: [], prompts: [], saved: [], sessions: [], attach: [], history: store.get("history", []),
     stats: { tasks: 0, calls: 0, images: new Set(), secs: [] },
     lastTask: null, taskStart: 0, taskImages: [], closing: false, studioId: null, usage: null,
@@ -477,6 +488,7 @@
       refreshCalling();
       paintStats();
       if (ev.id === S.studioId) studioDone(ev);
+      if (ev.video && video.waiting && (ev.id === video.id || (!video.id && String(ev.id).startsWith("direct-")))) videoDone(ev);
     }
   }
   function onReplyCancel(ev) {
@@ -524,7 +536,7 @@
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
     });
   }
-  $('[data-act="studio"]').addEventListener("click", () => openStudio());
+  $('[data-act="studio"]').addEventListener("click", () => openStudio("picture"));
   for (const b of $$('[data-act="max"]')) b.addEventListener("click", () => toggleMax(b.closest(".panel")));
   function toggleMax(panel, force) {
     const on = force ?? !panel.classList.contains("max");
@@ -695,6 +707,7 @@
     $("#set-effort").value = s.effort;
     fillGeminiModels();
     $("#set-chatgpt").checked = !!s.chatgptEnabled;
+    $("#set-flow-brain").checked = !!s.flowBrain;
     $("#set-sounds").checked = !!s.sounds;
     $("#set-notify").checked = !!s.notify;
     for (const r of $$('input[name="accent"]')) r.checked = r.value === s.accent;
@@ -702,6 +715,7 @@
     $("#set-clock24").checked = s.clock24 !== false;
     $("#set-style").value = s.answerStyle || "auto";
     paintAccess(s);
+    paintVideo();
     if (active !== $("#set-instructions")) $("#set-instructions").value = s.instructions || "";
     window.Station?.settings?.(s);
     paintStatus();
@@ -712,7 +726,12 @@
   }
   async function saveSetting(patch) {
     const s = await tryApi("/api/settings", patch);
-    if (s) applySettings(s);
+    if (s) {
+      applySettings(s);
+      // The server refused a choice (an older server still running in the background does not know newer choices).
+      const refused = Object.keys(patch).filter((k) => (typeof patch[k] === "boolean" || ["theme", "access", "accent", "density"].includes(k)) && s[k] !== patch[k]);
+      if (refused.length) toast("That setting was not saved. Close AI Brain completely and open it again, then try once more.", "err", 8000);
+    }
     return s;
   }
   let geminiModels = null;
@@ -726,6 +745,7 @@
   async function openSettings() {
     openDlg("#dlg-settings");
     refreshStatus(true);
+    loadVideoInfo();
     if (!geminiModels) {
       try { geminiModels = await api("/api/gemini-models"); fillGeminiModels(); } catch { /* the list stays on Automatic */ }
     }
@@ -741,6 +761,32 @@
   $("#set-gemini-model").addEventListener("change", (e) => saveSetting({ geminiModel: e.target.value }));
   $("#set-sounds").addEventListener("change", (e) => { saveSetting({ sounds: e.target.checked }); if (e.target.checked) { S.settings.sounds = true; chime(true); } });
   $("#set-chatgpt").addEventListener("change", async (e) => { await saveSetting({ chatgptEnabled: e.target.checked }); refreshStatus(true); });
+  $("#set-flow-brain").addEventListener("change", (e) => saveSetting({ flowBrain: e.target.checked }));
+  $("#set-video-model").addEventListener("change", (e) => saveSetting({ videoModel: e.target.value }));
+  $("#set-video-limit").addEventListener("change", (e) => {
+    const n = Math.round(Number(e.target.value));
+    if (!Number.isFinite(n) || n < 0 || n > 200) { e.target.value = S.settings?.videoDailyLimit ?? 10; toast("Pick a number from 0 to 200.", "err"); return; }
+    saveSetting({ videoDailyLimit: n });
+  });
+  async function saveVideoKey() {
+    const box = $("#set-video-key"), key = box.value.trim();
+    if (!key) { toast("Paste your Google API key first."); box.focus(); return; }
+    const btn = $("#set-video-save");
+    btn.disabled = true;
+    $("#set-video-state").textContent = "Checking the key with Google…";
+    const r = await tryApi("/api/google-key", { key });
+    btn.disabled = false;
+    if (r) { box.value = ""; video.info = r; toast("Video is connected.", "ok"); refreshStatus(true); }
+    paintVideo();
+  }
+  $("#set-video-save").addEventListener("click", saveVideoKey);
+  $("#set-video-key").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveVideoKey(); } });
+  $("#set-video-remove").addEventListener("click", async () => {
+    if (!await confirmBox("Remove the Google key?", "Video will be switched off until you add a key again. Videos you already made stay in your Gallery.", { yes: "Remove", danger: true })) return;
+    const r = await tryApi("/api/google-key", { remove: true });
+    if (r) { video.info = r; toast("The Google key was removed.", "ok"); refreshStatus(true); }
+    paintVideo();
+  });
   $("#set-chatgpt-login").addEventListener("click", async () => {
     if (await tryApi("/api/login/chatgpt")) toast("A sign-in window opened. Finish there, then come back here.", "ok", 7000);
   });
@@ -771,14 +817,24 @@
   $("#set-density").addEventListener("change", (e) => saveSetting({ density: e.target.checked ? "cozy" : "compact" }));
   $("#set-clock24").addEventListener("change", (e) => saveSetting({ clock24: e.target.checked }));
   $("#set-style").addEventListener("change", (e) => saveSetting({ answerStyle: e.target.value }));
-  // File and command access: "read" (default) or "ask" (Claude may change things after your click).
+  // File and command access: "read" (default), "ask" (Claude may change things after your click)
+  // or "auto" (always allow: nothing waits for a click).
   function paintAccess(s) {
-    const ask = s.access === "ask";
-    $("#set-access").value = ask ? "ask" : "read";
-    $("#set-access-note").textContent = ask
-      ? "Claude may write files and run commands. Every change waits for your Allow."
+    const mode = ["ask", "auto"].includes(s.access) ? s.access : "read";
+    $("#set-access").value = mode;
+    $("#set-access-note").textContent = mode === "auto"
+      ? "Always allow: Claude writes files and runs commands without asking. Everything it does is listed in Activity."
+      : mode === "ask" ? "Claude may write files and run commands. Every change waits for your Allow."
       : "Read only: Claude can read files but not change anything";
-    $("#row-folders").hidden = !ask;
+    $("#row-folders").hidden = mode === "read";
+    $("#set-folders-note").textContent = mode === "auto"
+      ? "Besides its own workspace. Commands can reach other places too."
+      : "Besides its own workspace. Each change still needs your click. Commands can reach other places, but you see every one first.";
+    const sb = $("#sb-access");
+    sb.hidden = mode === "read";
+    sb.textContent = mode === "auto" ? "Always allow" : "Asks first";
+    sb.classList.toggle("warn", mode === "auto");
+    sb.title = mode === "auto" ? "Claude changes files and runs commands without asking. Click to change this in Settings." : "Claude asks before every change. Click to change this in Settings.";
     const list = $("#set-folders");
     list.replaceChildren(...(s.folders || []).map((f) => h("li", {},
       h("code", { text: f, title: f }),
@@ -786,10 +842,22 @@
     if (!s.folders?.length) list.append(h("li", { class: "empty", text: "Only its own workspace folder." }));
   }
   $("#set-access").addEventListener("change", async (e) => {
-    if (e.target.value === "ask" && !await confirmBox("Let Claude change files and run commands?",
+    const was = S.settings?.access || "read";
+    if (e.target.value === "ask" && was === "read" && !await confirmBox("Let Claude change files and run commands?",
       "Claude will be able to write and edit files and run PowerShell commands. AI Brain shows you every change and every command first, and nothing happens until you click Allow. You can switch this back to Read only at any time.",
-      { yes: "Turn on" })) { e.target.value = "read"; return; }
+      { yes: "Turn on" })) { e.target.value = was; return; }
+    if (e.target.value === "auto" && !await confirmAlways()) { e.target.value = was; return; }
     saveSetting({ access: e.target.value });
+  });
+  const confirmAlways = () => confirmBox("Always allow, without asking?",
+    "Claude will write and edit files and run PowerShell commands right away, with no Allow or Deny question. You can still see everything it does in the Activity panel, and Stop still works. Sign-in data and Discord's data stay off limits. You can switch this back in Settings at any time.",
+    { yes: "Always allow" });
+  $("#sb-access").addEventListener("click", () => openSettings());
+  // "Always allow" in the question itself: switch the setting; the server then lets the waiting ones through.
+  $("#ap-always").addEventListener("click", async () => {
+    if (!await confirmAlways()) return;
+    try { applySettings(await api("/api/settings", { access: "auto" })); toast("Always allow is on. Claude will not ask again.", "ok"); }
+    catch (err) { toast(err.message, "err"); }
   });
   $("#set-folder-add").addEventListener("click", async () => {
     const f = await askInput("Folder Claude may work in (full path)", "", { max: 260, placeholder: "C:\\Users\\you\\Documents\\my-project" });
@@ -808,6 +876,8 @@
     const cs = getComputedStyle(root);
     fx.c1 = cs.getPropertyValue("--fx1").trim() || fx.c1;
     fx.c2 = cs.getPropertyValue("--fx2").trim() || fx.c2;
+    const dir = cs.getPropertyValue("--fx-dir").trim();
+    if (dir !== fx.dir) { fx.dir = dir; fx.parts = fx.parts.map(() => fxNew(true)); }
   }
   function fxSize() {
     fx.w = window.innerWidth; fx.h = window.innerHeight;
@@ -820,7 +890,8 @@
   }
   function fxNew(anywhere) {
     return {
-      x: Math.random() * fx.w, y: anywhere ? Math.random() * fx.h : fx.h + 10,
+      x: anywhere || fx.dir !== "side" ? Math.random() * fx.w : -10,
+      y: anywhere || fx.dir === "side" ? Math.random() * fx.h : fx.dir === "down" ? -10 : fx.h + 10,
       r: 0.6 + Math.random() * 1.7, vy: 6 + Math.random() * 18, sway: Math.random() * 6.28,
       a: 0.15 + Math.random() * 0.5, two: Math.random() < 0.22,
     };
@@ -836,10 +907,11 @@
     ctx.clearRect(0, 0, fx.w, fx.h);
     for (let i = 0; i < fx.parts.length; i++) {
       const p = fx.parts[i];
-      p.y -= p.vy * dt * speed;
       p.sway += dt;
-      p.x += Math.sin(p.sway) * 6 * dt;
-      if (p.y < -10) { fx.parts[i] = fxNew(false); continue; }
+      if (fx.dir === "down") { p.y += p.vy * 0.55 * dt * speed; p.x += Math.sin(p.sway * 0.8) * 14 * dt; }
+      else if (fx.dir === "side") { p.x += p.vy * 1.6 * dt * speed; p.y += Math.sin(p.sway) * 10 * dt; }
+      else { p.y -= p.vy * dt * speed; p.x += Math.sin(p.sway) * 6 * dt; }
+      if (p.y < -10 || p.y > fx.h + 10 || p.x > fx.w + 10) { fx.parts[i] = fxNew(false); continue; }
       const tw = p.a * (0.7 + 0.3 * Math.sin(p.sway * 2.3));
       const col = p.two ? fx.c2 : fx.c1;
       ctx.fillStyle = `rgba(${col}, ${(tw * 0.22).toFixed(3)})`;
@@ -1034,12 +1106,29 @@
   }
 
   const IDEAS = [
-    ["Plan something", "Plan a one-week launch for my coffee shop “Byte Brew”, and ask Gemini for five slogan ideas."],
-    ["Make a picture", "Create a logo for a coffee shop called “Byte Brew”: a steaming cup built from pixels, gold on black."],
-    ["Get a second opinion", "Explain how to start saving money on a small income, then have Gemini check your advice."],
-    ["Learn something", "Teach me how photosynthesis works in simple steps, then quiz me with five questions."],
+    ["bars", "Plan something", "Plan a one-week launch for my coffee shop “Byte Brew”, and ask Gemini for five slogan ideas."],
+    ["image", "Make a picture", "Create a logo for a coffee shop called “Byte Brew”: a steaming cup built from pixels, gold on black."],
+    ["film", "Make a video", "Make a 4-second video: steam rising from a coffee cup on a dark wooden table, slow camera push-in."],
+    ["users", "Get a second opinion", "Explain how to start saving money on a small income, then have Gemini check your advice."],
+    ["code", "Fix some code", "Find the bug in this code and explain the fix in plain words:\n\n"],
+    ["book", "Learn something", "Teach me how photosynthesis works in simple steps, then quiz me with five questions."],
   ];
-  $("#ideas").replaceChildren(...IDEAS.map(([t, d]) => h("button", { class: "idea", type: "button", onclick: () => fillComposer(d) }, h("b", { text: t }), h("span", { text: d }))));
+  $("#ideas").replaceChildren(...IDEAS.map(([ic, t, d]) => h("button", { class: "idea", type: "button", "data-idea": ic, onclick: () => ideaClick(ic, d) },
+    h("span", { class: "idea-ic" }, icon(ic)), h("b", { text: t }), h("span", { text: d.trim() }))));
+  /** Video needs the user's Google key, so that card opens the Video Studio (which explains it) with the idea filled in. */
+  function ideaClick(ic, d) {
+    if (ic !== "film") return fillComposer(d);
+    openStudio("video");
+    const t = $("#video-text");
+    if (!t.value.trim()) { t.value = d.replace(/^Make a 4-second video:s*/, ""); t.dispatchEvent(new Event("input", { bubbles: true })); }
+  }
+  /** The user's own saved prompts, as quick buttons under the cards on the start screen. */
+  function paintMineIdeas() {
+    const box = $("#mine-ideas"), mine = (S.prompts || []).slice(0, 6);
+    box.hidden = !mine.length;
+    box.replaceChildren(...(mine.length ? [h("div", { class: "mine-h", text: "Your prompts" }),
+      ...mine.map((p) => h("button", { type: "button", class: "btn small", title: p.text.slice(0, 300), onclick: () => usePrompt(p) }, icon("book"), h("span", { text: p.title })))] : []));
+  }
 
   // ---------- sessions ----------
   const pageTitle = () => `${S.session.title ? `${S.session.title} – ` : ""}AI Brain`;
@@ -1106,15 +1195,30 @@
 
   // ---------- gallery and picture viewer ----------
   const fmtSize = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+  let galKind = "all";
   function paintMedia() {
-    const list = S.media.map(mediaItem);
-    $("#recent-strip").replaceChildren(...list.slice(0, 8).map((_, i) => thumb(list, i)));
-    $("#gal-count").textContent = list.length;
+    const all = S.media.map(mediaItem);
+    $("#recent-strip").replaceChildren(...all.slice(0, 8).map((_, i) => thumb(all, i)));
+    $("#gal-count").textContent = all.length;
     if (!$("#dlg-gallery").open) return;
+    const isVid = all.map((it) => VIDEO_RE.test(it.name));
+    // The choice only appears once there is at least one video and one picture.
+    const mixed = isVid.includes(true) && isVid.includes(false);
+    if (!mixed) galKind = "all";
+    $("#gal-kind").hidden = !mixed;
+    $$("#gal-kind button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.kind === galKind)));
+    const idx = all.map((_, i) => i).filter((i) => galKind === "all" || isVid[i] === (galKind === "video"));
+    const list = idx.map((i) => all[i]);
     const grid = $("#gal-grid");
     if (!list.length) grid.replaceChildren(h("div", { class: "empty-note", text: "No pictures yet. Ask the brain for a picture, or open the Image Studio." }));
-    else grid.replaceChildren(...list.map((it, i) => thumb(list, i, `${ago(S.media[i].mtime)} · ${fmtSize(S.media[i].size)}`)));
+    else grid.replaceChildren(...list.map((it, j) => thumb(list, j, `${ago(S.media[idx[j]].mtime)} · ${fmtSize(S.media[idx[j]].size)}`)));
   }
+  $("#gal-kind").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-kind]");
+    if (!b) return;
+    galKind = b.dataset.kind;
+    paintMedia();
+  });
   async function loadMedia() {
     try { S.media = await api("/api/media"); } catch { return; }
     paintMedia();
@@ -1134,6 +1238,7 @@
     $("#light-attach").hidden = !it.path;
     $("#light-path").hidden = !it.path;
     $("#light-copy").hidden = VIDEO_RE.test(it.name);
+    $("#light-animate").hidden = !/^\/(media|uploads)\/[^/]+\.(png|jpe?g|webp)$/i.test(it.url.split("?")[0]);
     $("#light-folder").hidden = $("#light-delete").hidden = !it.isMedia;
     const dl = $("#light-download");
     dl.href = it.isMedia ? `${it.url}?download=1` : it.url;
@@ -1151,6 +1256,12 @@
   $("#light-fig").addEventListener("click", (e) => { if (e.target.id === "light-fig") $("#dlg-light").close(); });
   $("#dlg-light").addEventListener("close", () => $("#light-fig").replaceChildren());
   $("#light-attach").addEventListener("click", () => attachExisting(LB.list[LB.i]));
+  $("#light-animate").addEventListener("click", () => {
+    const it = LB.list[LB.i];
+    $("#dlg-light").close();
+    if ($("#dlg-gallery").open) $("#dlg-gallery").close();
+    openStudio("video", { url: it.url.split("?")[0], name: it.name });
+  });
   $("#light-path").addEventListener("click", () => copyText(LB.list[LB.i].path, "Path copied."));
   $("#light-folder").addEventListener("click", () => tryApi("/api/open", { target: "media", name: LB.list[LB.i].name }));
   $("#light-copy").addEventListener("click", async () => {
@@ -1184,23 +1295,141 @@
   ];
   const SHAPES = [["Any", ""], ["Square", "square (1:1)"], ["Wide", "wide landscape (16:9)"], ["Tall", "tall portrait (9:16)"]];
   const studio = { style: "", shape: "", waiting: false };
-  function segButtons(box, list, key) {
+  // Video lives in the same window: a second mode with its own fields.
+  const VSHAPES = [["Wide (16:9)", "16:9"], ["Tall (9:16)", "9:16"]];
+  const VQUALITY = [["720p", "720p"], ["1080p", "1080p"]];
+  const video = { mode: "picture", info: null, aspect: "16:9", seconds: 8, quality: "720p", waiting: false, id: null, from: null, t0: 0, timer: null };
+  const isVeo = (id) => /(^|\/)veo/i.test(String(id || ""));
+  function segButtons(box, list, key, obj = studio, after) {
     box.replaceChildren(...list.map(([label, value]) => h("button", {
-      type: "button", "aria-pressed": String(studio[key] === value), text: label,
-      onclick: () => { studio[key] = value; segButtons(box, list, key); },
+      type: "button", "aria-pressed": String(obj[key] === value), text: label,
+      onclick: () => { obj[key] = value; segButtons(box, list, key, obj, after); after?.(key); },
     })));
   }
   function studioPaint() {
-    const go = $("#studio-go");
-    go.replaceChildren(icon(studio.waiting ? "stop" : "spark"), h("span", { text: studio.waiting ? "Stop" : "Create" }));
-    go.className = `btn ${studio.waiting ? "danger" : "primary"}`;
+    const go = $("#studio-go"), vid = video.mode === "video";
+    const waiting = vid ? video.waiting : studio.waiting;
+    go.replaceChildren(icon(waiting ? "stop" : vid ? "play" : "spark"), h("span", { text: waiting ? "Stop" : vid ? "Create video" : "Create" }));
+    go.className = `btn ${waiting ? "danger" : "primary"}`;
+    go.disabled = vid && !waiting && !!video.info && !video.info.connected;
   }
-  function studioStatus(text, cls = "", busy = false) {
-    const el = $("#studio-status");
+  function studioStatus(text, cls = "", busy = false, sel = "#studio-status") {
+    const el = $(sel);
     el.hidden = !text;
     el.className = cls;
-    el.replaceChildren(...(busy ? [typing()] : []), h("span", { text: text || "" }));
+    el.replaceChildren(...(busy ? [typing()] : []), h("span", { class: "st-text", text: text || "" }));
   }
+  const videoStatus = (text, cls, busy) => studioStatus(text, cls, busy, "#video-status");
+  const videoModelName = (id) => (video.info?.models || []).find((m) => m.id === id)?.label.replace(/ \(.*/, "") || String(id || "").replace(/^models\//, "");
+  async function loadVideoInfo() {
+    try { video.info = await api("/api/video"); } catch { return; }
+    paintVideo();
+  }
+  // Paints everything about video: the studio's video side and the Settings section.
+  function paintVideo() {
+    const info = video.info, s = S.settings || {}, model = s.videoModel || "", veo = isVeo(model), vid = video.mode === "video";
+    $("#studio-pic").hidden = vid;
+    $("#studio-vid").hidden = !vid;
+    $("#t-studio").textContent = vid ? "Video Studio" : "Image Studio";
+    for (const b of $$("#studio-mode button")) b.setAttribute("aria-pressed", String(b.dataset.mode === video.mode));
+    $("#video-nokey").hidden = !info || info.connected;
+    const lens = veo ? [4, 6, 8] : [5, 10];
+    if (!veo) video.quality = "720p";
+    if (!lens.includes(video.seconds)) video.seconds = lens[lens.length - 1];
+    if (video.quality === "1080p") video.seconds = 8;
+    const changed = (key) => {
+      if (key === "seconds" && video.seconds !== 8) video.quality = "720p";
+      paintVideo();
+    };
+    segButtons($("#video-shapes"), VSHAPES, "aspect", video);
+    segButtons($("#video-lengths"), lens.map((n) => [`${n} seconds`, n]), "seconds", video, changed);
+    segButtons($("#video-quality"), VQUALITY, "quality", video, changed);
+    $("#video-quality-box").hidden = !veo;
+    $("#video-from").hidden = !video.from;
+    if (video.from) {
+      $("#video-from img").src = video.from.url;
+      $("#video-from-note").textContent = veo ? "The video starts from this picture" : "Starting from a picture needs a Veo model (Settings, under Video)";
+    }
+    $("#row-video-improve").hidden = !!video.from;
+    const today = info?.usage?.today ?? 0, limit = s.videoDailyLimit ?? 10;
+    $("#studio-note").textContent = !vid ? "Pictures are made by Gemini and saved to your Gallery."
+      : `Made by Google ${videoModelName(model)} with your own key. Each video costs money. Today: ${today}${limit ? ` of ${limit}` : ""}.`;
+    studioPaint();
+    // Settings
+    $("#set-video-state").textContent = !info ? "Checking…" : !info.connected ? "Not connected"
+      : info.from === "saved" ? `Connected (key ends in ${info.ends})` : "Connected (the key comes from this computer's settings)";
+    $("#set-video-state").classList.toggle("good", !!info?.connected);
+    $("#set-video-remove").hidden = !(info?.connected && info.from === "saved");
+    const sel = $("#set-video-model");
+    const list = (info?.models || []).slice();
+    if (model && !list.some((m) => m.id === model)) list.push({ id: model, label: model });
+    sel.replaceChildren(...list.map((m) => h("option", { value: m.id, text: m.label })));
+    sel.value = model;
+    if (document.activeElement !== $("#set-video-limit")) $("#set-video-limit").value = limit;
+    $("#set-video-today").textContent = `Protects you from a surprise bill. 0 = no limit. Made today: ${today}`;
+  }
+  function videoTick() {
+    const secs = Math.max(0, Math.round((Date.now() - video.t0) / 1000));
+    const el = $("#video-status .st-text");
+    if (el) el.textContent = `Google is making your video… ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}  (usually one to three minutes; you can close this window and keep working)`;
+    $("#sb-video").textContent = `Making a video… ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  }
+  $("#sb-video").addEventListener("click", () => openStudio("video"));
+  function videoWaiting(on) {
+    video.waiting = on;
+    $("#sb-video").hidden = !on;
+    clearInterval(video.timer);
+    video.timer = null;
+    if (on) {
+      if (!video.t0) video.t0 = Date.now();
+      videoStatus("Google is making your video…", "", true);
+      videoTick();
+      video.timer = setInterval(videoTick, 1000);
+    } else { video.id = null; video.t0 = 0; }
+    studioPaint();
+  }
+  function videoDone(ev) {
+    videoWaiting(false);
+    loadVideoInfo();
+    if (ev.stopped) { videoStatus("Stopped."); return; }
+    if (ev.isError) { videoStatus(ev.text || "Google could not make the video.", "err"); return; }
+    const url = (ev.images || []).find((u) => VIDEO_RE.test(u.split("?")[0]));
+    if (!url) { videoStatus("Google answered, but no video came back. Try a simpler description.", "err"); return; }
+    videoStatus("Done. The video is saved in your Gallery.");
+    const it = mediaItem(url);
+    $("#video-result").replaceChildren(
+      h("video", { src: url, controls: true, loop: true, playsinline: true }),
+      h("div", { class: "row-btns" },
+        h("a", { class: "btn small", href: `${url}?download=1`, download: it.name }, icon("download"), h("span", { text: "Download" })),
+        h("button", { type: "button", class: "btn small", onclick: () => tryApi("/api/open", { target: "media", name: it.name }) }, icon("folder"), h("span", { text: "Show in folder" }))));
+    if (!$("#dlg-studio").open) toast("Your video is ready. It is in the Gallery.", "ok", 7000);
+  }
+  async function videoGo() {
+    if (video.waiting) { await tryApi("/api/ask/stop", { to: "video" }); return; }
+    const desc = $("#video-text").value.trim();
+    if (!desc) { toast("Describe the video first."); $("#video-text").focus(); return; }
+    if ($("#video-improve").checked && !video.from) {
+      const ok = await sendTask(`Make a video for me. First turn my description into a strong, detailed video prompt (subject, action, camera movement, style, lighting, sounds), then create exactly one video with generate_video (aspect ${video.aspect}, ${video.seconds} seconds) and show me the result.\n\nMy description: ${desc}`);
+      if (ok) { $("#dlg-studio").close(); toast("The brain is working on your video. It takes a few minutes.", "ok", 6000); }
+      return;
+    }
+    const r = await tryApi("/api/video", { text: desc, aspect: video.aspect, seconds: video.seconds, resolution: video.quality, image: video.from?.url });
+    if (!r) { loadVideoInfo(); return; }
+    video.id = r.id;
+    video.t0 = Date.now();
+    $("#video-result").replaceChildren();
+    videoWaiting(true);
+  }
+  function setStudioMode(mode) {
+    video.mode = mode === "video" ? "video" : "picture";
+    paintVideo();
+    if (video.mode === "video") loadVideoInfo();
+    $(video.mode === "video" ? "#video-text" : "#studio-text").focus();
+  }
+  for (const b of $$("#studio-mode button")) b.addEventListener("click", () => setStudioMode(b.dataset.mode));
+  $("#video-flow").addEventListener("click", () => { $("#dlg-studio").close(); window.Station.openFlow(); });
+  $("#video-setup").addEventListener("click", () => { openSettings(); $("#sec-video").scrollIntoView({ block: "start" }); $("#set-video-key").focus(); });
+  $("#video-from-clear").addEventListener("click", () => { video.from = null; paintVideo(); });
   function studioDone(ev) {
     S.studioId = null;
     studio.waiting = false;
@@ -1212,14 +1441,15 @@
     studioStatus("Done. The picture is saved in your Gallery.");
     $("#studio-result").replaceChildren(pics);
   }
-  function openStudio() {
+  function openStudio(mode, from) {
     openDlg("#dlg-studio");
     segButtons($("#studio-styles"), STYLES, "style");
     segButtons($("#studio-shapes"), SHAPES, "shape");
-    studioPaint();
-    $("#studio-text").focus();
+    if (from) video.from = from;
+    setStudioMode(typeof mode === "string" ? mode : video.mode);
   }
   $("#studio-go").addEventListener("click", async () => {
+    if (video.mode === "video") { await videoGo(); return; }
     if (studio.waiting) { await tryApi("/api/ask/stop", { to: "gemini" }); return; }
     const desc = $("#studio-text").value.trim();
     if (!desc) { toast("Describe the picture first."); $("#studio-text").focus(); return; }
@@ -1237,7 +1467,7 @@
     studioStatus("Gemini is drawing your picture. This can take a minute…", "", true);
     studioPaint();
   });
-  $("#btn-studio").addEventListener("click", openStudio);
+  $("#btn-studio").addEventListener("click", () => openStudio());
 
   // ---------- prompt library ----------
   const BUILTIN = [
@@ -1269,7 +1499,7 @@
   }
   async function savePrompts(list) {
     const saved = await tryApi("/api/prompts", { prompts: list });
-    if (saved) { S.prompts = saved; paintPrompts(); }
+    if (saved) { S.prompts = saved; paintPrompts(); paintMineIdeas(); }
     return saved;
   }
   function promptItem(p, mine) {
@@ -1309,6 +1539,7 @@
   });
   async function loadPrompts() {
     try { S.prompts = await api("/api/prompts"); } catch { return; }
+    paintMineIdeas();
     paintPrompts();
   }
   function openPrompts() { openDlg("#dlg-prompts"); paintPrompts(); }
@@ -1344,7 +1575,8 @@
     store.set("zen", on);
   }
   $("#btn-zen").addEventListener("click", () => setZen(!document.body.classList.contains("zen")));
-  const THEMES = ["dark", "clover", "neon", "demon", "wind"];
+  const THEMES = ["dark", "neon", "goth", "berserk"];
+  const THEME_NAMES = { dark: "Dark", neon: "Neon", goth: "Goth", berserk: "Berserk" };
   const switchTheme = () => saveSetting({ theme: THEMES[(THEMES.indexOf(S.settings?.theme) + 1) % THEMES.length] });
   $("#btn-settings").addEventListener("click", openSettings);
   $("#btn-help").addEventListener("click", () => openDlg("#dlg-help"));
@@ -1366,25 +1598,31 @@
   const COMMANDS = [
     ["plus", "New session", "Alt+N", newSession],
     ["menu", "Open sessions", "Alt+S", openSessions],
-    ["spark", "Image Studio", "Alt+I", openStudio],
+    ["spark", "Image Studio", "Alt+I", () => openStudio("picture")],
+    ["play", "Video Studio (Google Veo)", "Alt+V", () => openStudio("video")],
+    ["ext", "Google Flow (Google's video maker)", "", () => window.Station.openFlow()],
+    ["ext", "Google Flow: open only to sign in (if Google blocks the sign-in)", "", () => window.Station.openFlow(false, true)],
     ["grid", "Gallery", "Alt+G", openGallery],
     ["book", "Prompt library", "Alt+P", openPrompts],
     ["bookmark", "Saved answers", "Alt+B", openSaved],
     ["eye", "Focus mode on / off", "Alt+Z", () => setZen(!document.body.classList.contains("zen"))],
     ["star", "Switch theme", "Alt+T", switchTheme],
+    ...THEMES.map((t) => ["palette", `Theme: ${THEME_NAMES[t]}`, "", () => saveSetting({ theme: t })]),
     ["layout", "Layout: Focus (conversation only)", "Alt+1", () => window.Station?.preset("focus")],
     ["layout", "Layout: Station", "Alt+2", () => window.Station?.preset("station")],
     ["layout", "Layout: Everything", "Alt+3", () => window.Station?.preset("all")],
     ["layout", "Layout: Social (Discord and music)", "Alt+4", () => window.Station?.preset("social")],
     ["layout", "Layout: Mine (your saved layout)", "Alt+5", () => window.Station?.preset("mine")],
     ["layout", "Save this layout as Mine", "", () => window.Station?.saveMine()],
-    ["gauge", "Show usage (Claude and Gemini)", "Alt+U", () => window.Station?.show("usage")],
+    ["gauge", "Show usage (Claude, Gemini and ChatGPT)", "Alt+U", () => window.Station?.show("usage")],
     ["activity", "Show activity", "Alt+L", () => window.Station?.show("activity")],
     ["music", "Music: play or pause", "Alt+M", () => window.Station?.music("toggle")],
     ["next", "Music: next song", "", () => window.Station?.music("next")],
     ["prev", "Music: previous song", "", () => window.Station?.music("prev")],
     ["ext", "Open Spotify", "", () => tryApi("/api/open-app", { app: "spotify" })],
     ["chat", "Show Discord", "Alt+D", () => window.Station?.show("discord")],
+    ["window", "Show your programs (Apps)", "Alt+A", () => window.Station?.show("apps")],
+    ["window", "Put the program in the middle back", "", () => window.Station?.appBack()],
     ["full", "Full screen on / off", "F11", () => window.Station?.fullscreen()],
     ["spark", "Work mode: Auto", "", () => window.Station?.mode("auto")],
     ["spark", "Work mode: Solo (Claude alone)", "", () => window.Station?.mode("solo")],
@@ -1399,6 +1637,7 @@
     ["folder", "Open the pictures folder", "", () => tryApi("/api/open", { target: "media" })],
     ["trash", "Clear the activity list", "", () => logEl.replaceChildren()],
     ["help", "Help and shortcuts", "F1", () => openDlg("#dlg-help")],
+    ["spark", "What's new in version 3", "", () => openDlg("#dlg-new")],
     ["power", "Quit AI Brain", "", quit],
   ].map(([ic, label, hint, run]) => ({ ic, label, hint, run }));
   const pal = { items: [], sel: 0 };
@@ -1445,10 +1684,10 @@
   $("#btn-palette").addEventListener("click", openPalette);
 
   // ---------- keyboard ----------
-  const ALT_KEYS = { KeyN: newSession, KeyS: openSessions, KeyI: openStudio, KeyG: openGallery, KeyP: openPrompts, KeyB: openSaved, KeyZ: () => setZen(!document.body.classList.contains("zen")), KeyT: switchTheme,
+  const ALT_KEYS = { KeyN: newSession, KeyS: openSessions, KeyI: () => openStudio("picture"), KeyV: () => openStudio("video"), KeyG: openGallery, KeyP: openPrompts, KeyB: openSaved, KeyZ: () => setZen(!document.body.classList.contains("zen")), KeyT: switchTheme,
     Digit1: () => window.Station?.preset("focus"), Digit2: () => window.Station?.preset("station"), Digit3: () => window.Station?.preset("all"),
     Digit4: () => window.Station?.preset("social"), Digit5: () => window.Station?.preset("mine"),
-    KeyM: () => window.Station?.music("toggle"), KeyU: () => window.Station?.show("usage"), KeyD: () => window.Station?.show("discord"), KeyL: () => window.Station?.show("activity") };
+    KeyM: () => window.Station?.music("toggle"), KeyU: () => window.Station?.show("usage"), KeyD: () => window.Station?.show("discord"), KeyA: () => window.Station?.show("apps"), KeyL: () => window.Station?.show("activity") };
   document.addEventListener("keydown", (e) => {
     const ctrl = e.ctrlKey || e.metaKey;
     if (S.closing) return;
@@ -1525,7 +1764,9 @@
       case "ready":
         S.replaying = false;
         S.queue = ev.queue || [];
-        S.direct = { chatgpt: !!ev.direct?.chatgpt, gemini: !!ev.direct?.gemini };
+        S.direct = { chatgpt: !!ev.direct?.chatgpt, gemini: !!ev.direct?.gemini, video: !!ev.direct?.video };
+        // A video that was started before this window (re)opened keeps its Stop button.
+        if (S.direct.video !== video.waiting) { videoWaiting(S.direct.video); if (!S.direct.video) videoStatus(""); }
         S.phase = ev.phase || "idle";
         setBusy(!!ev.busy);
         if (ev.busy) { liveText = ev.live || ""; paintLive(); }
@@ -1554,7 +1795,11 @@
       case "approval": approvalAdd(ev); break;
       case "approval_done": approvalGone(ev.id); break;
       case "queue": S.queue = ev.items || []; paintQueue(); break;
-      case "direct": S.direct[ev.who] = !!ev.value; paintDirect(); paintStage(); break;
+      case "direct":
+        S.direct[ev.who] = !!ev.value; paintDirect(); paintStage();
+        if (ev.who === "video" && !ev.value && video.waiting) { videoWaiting(false); videoStatus(""); loadVideoInfo(); }
+        break;
+      case "video_state": loadVideoInfo(); refreshStatus(true); break;
       case "helper_state":
         if (S.status?.[ev.who] && !S.status[ev.who].off) {
           S.status[ev.who].ok = !!ev.ok;
@@ -1564,6 +1809,7 @@
         break;
       case "usage": paintUsage(ev); break;
       case "media": loadMedia(); break;
+      case "flow-open": if (window.Station?.hasShell?.()) window.Station.openFlow(true); break;
       case "sessions": loadSessionsSoon(); break;
       case "settings": applySettings(ev.settings); break;
       case "title": S.session.title = ev.title || ""; paintTitle(); break;
@@ -1589,14 +1835,27 @@
     };
   }
 
+  // ---------- what's new ----------
+  $("#help-new").addEventListener("click", () => { $("#dlg-help").close(); openDlg("#dlg-new"); });
+  $$("#dlg-new [data-new]").forEach((b) => b.addEventListener("click", () => {
+    $("#dlg-new").close();
+    if (b.dataset.new === "settings") openSettings();
+    else if (b.dataset.new === "video") openStudio("video");
+    else if (b.dataset.new === "usage") window.Station.show("usage");
+    else if (b.dataset.new === "goth" || b.dataset.new === "berserk") saveSetting({ theme: b.dataset.new });
+    else if (b.dataset.new === "flow-setting") { openSettings(); setTimeout(() => $("#sec-video")?.scrollIntoView({ block: "start" }), 150); }
+    else window.Station.openFlow();
+  }));
+
   // ---------- start ----------
-  const cachedTheme = store.get("theme", null);
+  // Themes that were removed open as Berserk (the server moves the saved choice over in the same way).
+  const cachedTheme = ({ clover: "berserk", demon: "berserk", wind: "berserk" })[store.get("theme", null)] || store.get("theme", null);
   if (THEMES.includes(cachedTheme)) root.dataset.theme = cachedTheme;
   if (store.get("zen", false)) setZen(true);
   // The workstation script (station.js) builds the docks, usage, music and Discord panels with these.
   window.Brain = {
     S, $, $$, h, icon, svgUse, api, tryApi, toast, store, openDlg, confirmBox, copyText, atBottom, short, clock, dur, mmss,
-    saveSetting, openSettings, openStudio, openGallery, openPrompts, openSaved, openSessions, newSession, toggleMax, setZen,
+    saveSetting, openSettings, openStudio, THEMES, THEME_NAMES, openGallery, openPrompts, openSaved, openSessions, newSession, toggleMax, setZen,
   };
   taskEl.value = store.get("draft", "") || "";
   grow(taskEl);
@@ -1612,5 +1871,9 @@
     loadSaved();
     loadSessions();
     taskEl.focus();
+    // Only once the new version is really running (not this page on a server that was not restarted yet).
+    if (newsDue && parseFloat((await api("/api/ping").catch(() => null))?.version) >= NEWS) {
+      setTimeout(() => { if (!document.querySelector("dialog[open]")) { openDlg("#dlg-new"); store.set("news", NEWS); } }, 700);
+    }
   })();
 })();

@@ -11,6 +11,7 @@ state.json
 usage-*.jsonl
 app.log
 brain-mcp.json
+google-key.json
 *.log
 
 # Test screenshots (made again by every test run)

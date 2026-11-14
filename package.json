@@ -1,6 +1,6 @@
 {
   "name": "ai-brain",
-  "version": "2.2.0",
+  "version": "3.1.0",
   "private": true,
   "description": "Lets Claude Code act as the brain and talk to ChatGPT (Codex CLI) and Gemini (Gemini CLI) using your subscription logins - no API keys.",
   "type": "module",
@@ -9,6 +9,7 @@
     "start": "node server.mjs"
   },
   "dependencies": {
+    "@google/genai": "^3.3.0",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "dompurify": "^3.4.17",
     "electron": "^45.3.1",
@@ -17,9 +18,11 @@
   },
   "devDependencies": {
     "@fontsource/cinzel": "^5.3.0",
+    "@fontsource/cormorant-garamond": "^5.3.0",
     "@fontsource/inter": "^5.3.0",
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/orbitron": "^5.3.0",
+    "@fontsource/pirata-one": "^5.3.0",
     "puppeteer-core": "^25.17.0"
   }
 }

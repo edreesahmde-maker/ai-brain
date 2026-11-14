@@ -2,7 +2,7 @@
 // Server tests. Starts the app server on a spare port with a throw-away data folder,
 // a fake Claude and fake helpers, then checks the HTTP API and the event stream.
 // Run: node test/api-test.mjs
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +14,17 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), "ai-brain-test-"));
 const FIXTURE = path.join(ROOT, "test", "fixture.jpg");
 const H = { Origin: BASE, "Content-Type": "application/json" };
+
+// A pretend Codex folder: one conversation record with plan limits, shaped like the real one.
+const CODEX_HOME = path.join(DATA, "fake-codex");
+{
+  const dir = path.join(CODEX_HOME, "sessions", "2026", "11", "13");
+  fs.mkdirSync(dir, { recursive: true });
+  const soon = Math.round(Date.now() / 1000) + 3 * 3600, later = Math.round(Date.now() / 1000) + 4 * 86400;
+  fs.writeFileSync(path.join(dir, "rollout-2026-11-13T01-02-03-test-thread.jsonl"),
+    JSON.stringify({ type: "session_meta", payload: { id: "test-thread" } }) + "\n" +
+    JSON.stringify({ type: "event_msg", payload: { type: "token_count", rate_limits: { limit_id: "codex", primary: { used_percent: 8, window_minutes: 300, resets_at: soon }, secondary: { used_percent: 23, window_minutes: 10080, resets_at: later } } } }) + "\n");
+}
 
 let passed = 0, failed = 0;
 const ok = (cond, name, extra = "") => { if (cond) { passed++; console.log(`  ok   ${name}`); } else { failed++; console.log(`  FAIL ${name} ${extra}`); } };
@@ -28,7 +39,7 @@ function startServer(extraEnv = {}) {
       ...process.env, BRAIN_PORT: String(PORT), BRAIN_DATA_DIR: DATA, BRAIN_NO_OPEN: "1",
       BRAIN_FAKE_DISCORD: "stopped",
       BRAIN_FAKE_CLAUDE: path.join(ROOT, "test", "fake-claude.mjs"), BRAIN_FAKE_HELPERS: "1",
-      BRAIN_FAKE_IMAGE: FIXTURE, BRAIN_FAKE_DELAY_MS: "150", BRAIN_APPROVAL_MS: "4000", ...extraEnv,
+      BRAIN_FAKE_IMAGE: FIXTURE, BRAIN_FAKE_VIDEO: path.join(ROOT, "test", "fixture.mp4"), BRAIN_FAKE_DELAY_MS: "150", BRAIN_APPROVAL_MS: "4000", BRAIN_FAKE_CODEX_HOME: CODEX_HOME, ...extraEnv,
     },
     stdio: "ignore",
   });
@@ -110,6 +121,8 @@ try {
   const s1 = (await post("/api/settings", { theme: "neon", fontSize: 99, bogus: 1, effort: "high", brainModel: "sonnet" })).body;
   ok(s1.theme === "neon" && s1.fontSize === 14 && !("bogus" in s1) && s1.effort === "high", "settings validated");
   ok(await waitFor((e) => e.type === "settings" && e.settings.theme === "neon"), "settings change broadcast");
+  ok((await post("/api/settings", { theme: "goth" })).body.theme === "goth" && (await post("/api/settings", { theme: "gothic" })).body.theme === "goth", "the Goth theme is accepted, unknown themes are not");
+  await post("/api/settings", { theme: "neon" });
 
   // Runs last (see the end), so its tasks and sessions do not change the counts the other checks expect.
   const accessTests = async () => {
@@ -226,6 +239,40 @@ try {
     x = await end(s.from);
     ok(/switched off/.test(x.fin.text) && !there("fake-change.txt"), "switching access off says no to a waiting question");
 
+    // always allow: nothing waits, the forbidden list still holds, everything is logged
+    await post("/api/settings", { access: "ask" });
+    s = await start("[change] waiting when always allow is switched on");
+    ap = await waitFor((e) => e.type === "approval", 8000, s.from);
+    ok((await post("/api/settings", { access: "auto" })).body.access === "auto", "access switched to always allow");
+    x = await end(s.from);
+    ok(/allowed/.test(x.fin.text) && there("fake-change.txt") && x.slice.some((e) => e.type === "approval_done" && e.id === ap?.id && e.allow === true), "switching to always allow lets a waiting question through");
+    rm("fake-change.txt");
+    s = await start("[twice] always allow");
+    x = await end(s.from);
+    a = brainArgs().at(-1);
+    ok(there("fake-change-1.txt") && there("fake-change-2.txt") && !x.slice.some((e) => e.type === "approval"), "always allow: files are changed without a question");
+    ok(x.slice.filter((e) => e.type === "log" && /Allowed .always allow is on.: Write/.test(e.text)).length === 2, "always allow: every change is listed in the activity log");
+    ok(a.args.includes("--permission-prompt-tool") && a.args.includes("--restricted") && /Always allow/.test(sys(a)) && mcpEnv().AI_BRAIN_APPROVE_KEY?.length === 48, "always allow: still goes through the approve tool; prompt says nothing waits");
+    rm("fake-change-1.txt"); rm("fake-change-2.txt");
+    s = await start("[command] always allow");
+    x = await end(s.from);
+    ok(/allowed/.test(x.fin.text) && !x.slice.some((e) => e.type === "approval"), "always allow: a command runs without a question");
+    s = await start("[change] [forbidden] always allow");
+    x = await end(s.from);
+    ok(/denied/.test(x.fin.text) && x.slice.some((e) => e.type === "log" && /never lets the brain touch sign-in data/.test(e.text)), "always allow: Discord data and sign-in data are still refused");
+    sse.abort();
+    await sleep(300);
+    { const finals = async () => (await get("/api/history")).body.filter((e) => e.type === "final");
+      const n0 = (await finals()).length;
+      await post("/api/task", { text: "[change] always allow, nobody home" });
+      let f2 = null; for (let i = 0; i < 60 && !f2; i++) { await sleep(150); const f = await finals(); if (f.length > n0) f2 = f.at(-1); }
+      ok(f2 && there("fake-change.txt"), "always allow: works with the window closed"); }
+    rm("fake-change.txt");
+    events.length = 0;
+    await openEvents();
+    await waitFor((e) => e.type === "ready");
+    await sleep(400);
+
     // no window open
     await post("/api/settings", { access: "ask" });
     sse.abort();
@@ -256,6 +303,13 @@ try {
   ok(/Gemini is your only helper/.test(a.args[a.args.indexOf("--append-system-prompt") + 1]), "system prompt says ChatGPT is off");
   const mcp = JSON.parse(fs.readFileSync(path.join(DATA, "brain-mcp.json"), "utf8"));
   ok(mcp.mcpServers["ai-brain"].env.AI_BRAIN_CHATGPT === "0", "MCP config turns ChatGPT off");
+  ok(mcp.mcpServers["ai-brain"].env.AI_BRAIN_FLOW === "1" && /^http:\/\/127\.0\.0\.1:\d+$/.test(mcp.mcpServers["ai-brain"].env.AI_BRAIN_APP_URL), "Google Flow for the brain is on by default, and its tools can reach this app");
+  ok(a.args.includes("mcp__ai-brain__flow_make_video") && a.args.includes("mcp__ai-brain__flow_look") && /GOOGLE FLOW \(tools flow_make_video/.test(a.args[a.args.indexOf("--append-system-prompt") + 1]), "the brain is offered the Flow tools and told how to use them");
+  {
+    const fo = await post("/api/flow/open", {});
+    ok(fo.status === 200 && fo.body?.ok === true, "the brain's tools can ask the window to open Google Flow");
+    ok((await post("/api/flow/open", {}, { "Content-Type": "application/json" })).status === 403, "but other websites cannot");
+  }
 
   t = await task("Second question");
   a = brainArgs().at(-1);
@@ -284,6 +338,7 @@ try {
     ok(stx.claude?.all?.tasks >= 6 && stx.claude.session.out > 0 && stx.claude.today.cost > 0, "stats: Claude usage counted", JSON.stringify(stx.claude?.all));
     ok(Array.isArray(stx.days) && stx.days.length === 14 && stx.days.at(-1).tasks >= 6, "stats: 14 days, today counted");
     ok(stx.geminiUse?.today && typeof stx.geminiUse.today.calls === "number", "stats: Gemini usage block");
+  ok(stx.chatgptUse?.today?.calls === 0 && stx.chatgptUse.limits === null && stx.days.at(-1).chatgpt === 0, "stats: ChatGPT usage block, empty before ChatGPT is asked", JSON.stringify(stx.chatgptUse));
     await post("/api/settings", { answerStyle: "auto", instructions: "", clock24: true, density: "compact", accent: "blue" });
   }
 
@@ -400,6 +455,106 @@ try {
   await waitFor((e) => e.type === "direct" && e.value === false, 3000, from);
   ok((await get("/api/status?force")).body.gemini.ok === false, "status reflects the failed helper");
 
+  console.log("video");
+  {
+    const KEY = "AIzaTestKey_0123456789abcdefghijklmnopqrWXYZ";
+    const keyFile = path.join(DATA, "google-key.json");
+    const sys = (a) => a.args[a.args.indexOf("--append-system-prompt") + 1];
+    let v = (await get("/api/video")).body;
+    ok(v.connected === false && v.models.length >= 3 && v.model === "veo-3.1-generate-preview" && v.limit === 10 && v.usage.today === 0, "video starts not connected, with Veo 3.1 picked");
+    ok((await get("/api/status?force")).body.video.off === true, "status says video is not connected");
+    let a = brainArgs().at(-1);
+    ok(!a.args.includes("mcp__ai-brain__generate_video") && !/Video is not connected/.test(sys(a)) && /GOOGLE FLOW[^\n]*Use it when the user asks for a video/.test(sys(a)), "without a key the brain has no Veo key tool and uses Google Flow for videos");
+    let r = await post("/api/video", { text: "a clover in the wind" });
+    ok(r.status === 409 && r.body.nokey === true && /Settings/.test(r.body.error), "no key: making a video is refused with a clear message");
+    r = await post("/api/google-key", { key: "short" });
+    ok(r.status === 400 && /does not look like/.test(r.body.error), "a key that is too short is refused");
+    r = await post("/api/google-key", { key: "bad_key_0123456789abcdefghijklmnop" });
+    ok(r.status === 400 && /did not accept/.test(r.body.error) && !fs.existsSync(keyFile), "a key Google refuses is not saved");
+    r = await post("/api/google-key", { key: `  ${KEY}\n` });
+    ok(r.status === 200 && r.body.connected === true && r.body.ends === "WXYZ" && r.body.from === "saved" && JSON.parse(fs.readFileSync(keyFile, "utf8")).key === KEY, "a good key is saved");
+    const everything = JSON.stringify([r.body, (await get("/api/settings")).body, (await get("/api/status?force")).body, (await get("/api/history")).body, (await get("/api/video")).body]);
+    ok(!everything.includes(KEY) && !everything.includes(KEY.slice(0, 12)), "the key is never sent back to the window");
+    ok((await get("/api/status?force")).body.video.ok === true && /Veo 3\.1/.test((await get("/api/status")).body.video.detail), "status says video is ready");
+    ok(!fs.readFileSync(path.join(DATA, "settings.json"), "utf8").includes(KEY), "the key is not in the settings file");
+
+    from = events.length;
+    d = await post("/api/video", { text: "a clover in the wind", aspect: "9:16", seconds: 6 });
+    let call = await waitFor((e) => e.type === "call" && e.id === d.body.id, 3000, from);
+    dr = await waitFor((e) => e.type === "reply" && e.id === d.body.id, 8000, from);
+    ok(call?.video === true && /^Generate video: /.test(call.prompt) && dr?.video === true && dr.images.length === 1 && /-video\.mp4$/.test(dr.images[0]) && /6 seconds, 9:16/.test(dr.text), "the Video Studio request returns a video");
+    const vid = await fetch(BASE + dr.images[0]);
+    ok(vid.status === 200 && vid.headers.get("content-type") === "video/mp4" && vid.headers.get("accept-ranges") === "bytes", "the video is served");
+    const part = await fetch(BASE + dr.images[0], { headers: { Range: "bytes=10-19" } });
+    ok(part.status === 206 && (await part.arrayBuffer()).byteLength === 10 && /^bytes 10-19\/\d+$/.test(part.headers.get("content-range")), "the player can ask for a part of the video");
+    ok((await fetch(BASE + dr.images[0], { headers: { Range: "bytes=99999999-" } })).status === 416, "a part past the end is refused");
+    await waitFor((e) => e.type === "direct" && e.who === "video" && e.value === false, 3000, from);
+    v = (await get("/api/video")).body;
+    ok(v.usage.today === 1 && v.usage.seconds === 6 && (await get("/api/stats")).body.videoUse.today === 1 && (await get("/api/media")).body.some((m) => /\.mp4$/.test(m.name)), "the video is counted and listed in the Gallery");
+
+    from = events.length;
+    d = await post("/api/video", { text: "[slow] a long one" });
+    await waitFor((e) => e.type === "direct" && e.who === "video" && e.value === true, 3000, from);
+    ok((await post("/api/video", { text: "a second one" })).status === 409, "one video at a time");
+    ok((await post("/api/google-key", { remove: true })).status === 409, "the key cannot be changed while a video is being made");
+    await post("/api/ask/stop", { to: "video" });
+    dr = await waitFor((e) => e.type === "reply" && e.id === d.body.id, 5000, from);
+    ok(dr?.stopped && !dr.isError, "a video can be stopped");
+    await waitFor((e) => e.type === "direct" && e.who === "video" && e.value === false, 3000, from);
+    from = events.length;
+    d = await post("/api/video", { text: "[fail] this one" });
+    dr = await waitFor((e) => e.type === "reply" && e.id === d.body.id, 5000, from);
+    ok(dr?.isError && /could not make the video/.test(dr.text), "a failed video is reported");
+    await waitFor((e) => e.type === "direct" && e.who === "video" && e.value === false, 3000, from);
+    ok((await get("/api/video")).body.usage.today === 1, "stopped and failed videos are not counted");
+
+    // starting from a picture
+    const pic = (await get("/api/media")).body.find((m) => /\.jpe?g$/i.test(m.name));
+    from = events.length;
+    d = await post("/api/video", { text: "make it move", image: pic.url, resolution: "1080p", seconds: 4 });
+    dr = await waitFor((e) => e.type === "reply" && e.id === d.body.id, 5000, from);
+    ok(dr && !dr.isError && /from a picture/.test(dr.text) && /1080p/.test(dr.text) && /8 seconds/.test(dr.text), "a Gallery picture can be the start of a video (1080p is always 8 seconds)");
+    await waitFor((e) => e.type === "direct" && e.who === "video" && e.value === false, 3000, from);
+    ok((await post("/api/video", { text: "x", image: "/media/../settings.json" })).status === 400 && (await post("/api/video", { text: "x", image: "/media/nope.png" })).status === 400, "only real pictures from the app can start a video");
+    ok((await post("/api/video", { text: "x", image: pic.url, model: "models/gemini-omni-1.2-flash" })).status === 400, "starting from a picture needs a Veo model");
+    ok((await post("/api/video", { text: "" })).status === 400, "an empty description is refused");
+
+    // the model and the daily limit
+    let st = (await post("/api/settings", { videoModel: "models/gemini-omni-1.2-flash", videoDailyLimit: 2 })).body;
+    ok(st.videoModel === "models/gemini-omni-1.2-flash" && st.videoDailyLimit === 2, "the video model and the daily limit can be changed");
+    st = (await post("/api/settings", { videoModel: "bad model!", videoDailyLimit: -3 })).body;
+    ok(st.videoModel === "models/gemini-omni-1.2-flash" && st.videoDailyLimit === 2, "bad video settings are ignored");
+    r = await post("/api/video", { text: "one too many" });
+    ok(r.status === 409 && /limit \(2\) is reached/.test(r.body.error), "the daily limit stops the next video");
+    await post("/api/settings", { videoDailyLimit: 0 });
+    from = events.length;
+    d = await post("/api/video", { text: "no limit now", seconds: 30 });
+    dr = await waitFor((e) => e.type === "reply" && e.id === d.body.id, 5000, from);
+    ok(dr && !dr.isError && /gemini-omni-1\.2-flash/.test(dr.text) && /10 seconds/.test(dr.text), "limit 0 means no limit; the other model makes up to 10 seconds");
+    await waitFor((e) => e.type === "direct" && e.who === "video" && e.value === false, 3000, from);
+    await post("/api/settings", { videoModel: "veo-3.1-generate-preview", videoDailyLimit: 10 });
+
+    // the brain
+    t = await task("Make a [video] for me");
+    call = t.slice.find((e) => e.type === "call");
+    const rep = t.slice.find((e) => e.type === "reply");
+    a = brainArgs().at(-1);
+    ok(call?.video === true && call.to === "gemini" && /^Generate video: /.test(call.prompt) && rep?.video === true && rep.images.length === 1 && /\.mp4$/.test(rep.images[0]), "the brain can make a video");
+    ok(t.fin.images.length === 1 && /\.mp4$/.test(t.fin.images[0]), "the final answer carries the video");
+    ok(a.args.includes("mcp__ai-brain__generate_video") && /VIDEO \(tool generate_video\) - Google Veo 3\.1 /.test(sys(a)) && /costs the user money/.test(sys(a)), "with a key the brain gets the video tool and is told it costs money");
+    ok(/GOOGLE FLOW[^\n]*Prefer generate_video/.test(sys(a)), "with a key it prefers the key and keeps Flow as the fallback");
+    await post("/api/settings", { access: "auto" });
+    t = await task("[change] [keyfile] always allow");
+    ok(/denied/.test(t.fin.text) && JSON.parse(fs.readFileSync(keyFile, "utf8")).key === KEY, "even with always allow, the brain cannot touch the Google key");
+    await post("/api/settings", { access: "read" });
+
+    r = await post("/api/google-key", { remove: true });
+    ok(r.status === 200 && r.body.connected === false && !fs.existsSync(keyFile), "the key can be removed");
+    ok((await post("/api/video", { text: "after removal" })).body.nokey === true, "and video is off again");
+    r = await post("/api/google-key", { key: KEY });
+    ok(r.body.connected === true, "and connected again");
+  }
+
   console.log("uploads + attachments");
   const up = await fetch(BASE + "/api/upload?name=" + encodeURIComponent("my photo (1).jpg"), { method: "POST", headers: { Origin: BASE }, body: fs.readFileSync(FIXTURE) }).then((r) => r.json());
   ok(up.path.includes("uploads") && up.url?.startsWith("/uploads/") && (await fetch(BASE + up.url)).status === 200, "upload saved and served");
@@ -476,6 +631,21 @@ try {
   d = await post("/api/ask", { to: "chatgpt", text: "direct to chatgpt" });
   dr = await waitFor((e) => e.type === "reply" && e.id === d.body.id, 8000, from);
   ok(dr && /ChatGPT \(test reply\)/.test(dr.text), "direct ChatGPT message works when on");
+  {
+    const cu = (await get("/api/stats")).body;
+    const c = cu.chatgptUse;
+    ok(c?.today.calls >= 1 && c.all.calls >= c.today.calls && c.today.in >= 900 && c.today.cached >= 400 && c.today.out >= 60, "stats: ChatGPT requests and tokens are counted", JSON.stringify(c));
+    ok(c?.limits?.short?.pct === 8 && c.limits.short.mins === 300 && c.limits.long?.pct === 23 && c.limits.long.mins === 10080 && c.limits.long.resets > Date.now() / 1000, "stats: ChatGPT plan limits read from Codex's conversation record", JSON.stringify(c?.limits));
+    ok(cu.days.at(-1).chatgpt >= 1, "stats: ChatGPT counted in today's column");
+    const raw = fs.readFileSync(path.join(DATA, "usage-chatgpt.jsonl"), "utf8");
+    ok(!/test-thread|rollout|fake-codex/.test(raw), "only the numbers are kept, not where they came from");
+    const from2 = events.length;
+    const bad = await post("/api/ask", { to: "chatgpt", text: "this one [fail]s" });
+    await waitFor((e) => e.type === "reply" && e.id === bad.body.id, 8000, from2);
+    await waitFor((e) => e.type === "direct" && e.value === false, 3000, from2);
+    const c2 = (await get("/api/stats")).body.chatgptUse;
+    ok(c2.today.failed === c.today.failed + 1 && c2.today.calls === c.today.calls + 1, "stats: a failed ChatGPT request is counted as failed", JSON.stringify(c2.today));
+  }
   await waitFor((e) => e.type === "direct" && e.value === false, 3000, from);
   await post("/api/settings", { chatgptEnabled: false });
 
@@ -505,6 +675,8 @@ try {
   const lastTaskIdx = events.map((e) => e.type).lastIndexOf("task");
   ok(events.slice(lastTaskIdx).some((e) => e.type === "final"), "interrupted task is closed off, no endless spinner");
   ok((await get("/api/settings")).body.theme === "neon", "settings survive a restart");
+  ok(!(await post("/api/settings", { theme: "clover" })).body.theme.includes("clover") && (await post("/api/settings", { theme: "berserk" })).body.theme === "berserk", "removed themes are refused, Berserk is accepted");
+  await post("/api/settings", { theme: "neon" });
   ok((await get("/api/history")).body.find((e) => e.type === "ready").usage?.five_hour === 0.42, "last usage survives a restart");
   t = await task("After restart");
   ok(t.fin && !t.fin.isError && /resumed: no/.test(t.fin.text), "stale Claude session recovers with a fresh one");
@@ -516,6 +688,7 @@ try {
   await waitFor((e) => e.type === "ready", 3000, from);
 
   await accessTests();
+  themeMoveTest();
 } catch (e) {
   failed++;
   console.log("  CRASH", e.stack || e);
@@ -525,4 +698,17 @@ try {
   try { fs.rmSync(DATA, { recursive: true, force: true }); } catch {}
 }
 console.log(`\n${passed} passed, ${failed} failed`);
+// A saved theme that was removed in 3.1 (the three Black Clover ones) opens as Berserk.
+function themeMoveTest() {
+  console.log("removed themes");
+  for (const old of ["clover", "demon", "wind"]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-brain-theme-"));
+    fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ theme: old, accent: "violet" }));
+    const r = spawnSync(process.execPath, ["--input-type=module", "-e", `import { loadSettings } from ${JSON.stringify(new URL("../lib.mjs", import.meta.url).href)}; console.log(JSON.stringify(loadSettings()));`],
+      { env: { ...process.env, BRAIN_DATA_DIR: dir }, encoding: "utf8" });
+    let s = null; try { s = JSON.parse(r.stdout.trim().split("\n").pop()); } catch { /* shown below */ }
+    ok(s?.theme === "berserk" && s.accent === "violet", `a saved "${old}" theme opens as Berserk and other settings stay`, r.stdout + r.stderr);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 process.exit(failed ? 1 : 0);

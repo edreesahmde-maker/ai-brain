@@ -95,28 +95,51 @@
 #rail .icon-btn.on::before { content: ""; position: absolute; left: -5px; top: 8px; bottom: 8px; width: 2px; border-radius: 2px; background: var(--accent); }
 #rail .spacer { min-height: 8px; }
 
-.dock { flex: none; width: clamp(200px, var(--w, 300px), max(200px, calc((100vw - var(--rail-w) - 520px) / 2))); display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: var(--gap) 0; }
-#dock-left { padding-left: var(--gap); }
-#dock-right { padding-right: var(--gap); }
-.dock[hidden], .vsplit[hidden] { display: none !important; }
-.dock > .panel { flex: var(--f, 1) 1 0; min-height: 60px; overflow: hidden; }
-.dock > #stats:not(.collapsed) { min-height: 104px; }
-.dock > #music:not(.collapsed) { min-height: 168px; }
-.dock > .panel.collapsed { flex: none; min-height: 0; }
-.panel.collapsed > :not(.p-head) { display: none !important; }
+/* The work area: every panel, the chat and the program are placed by station.js (left/top/width/height). */
+#tiles { flex: 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.leaf { position: absolute; box-sizing: border-box; min-width: 0; min-height: 0; }
+.leaf.t-off { display: none !important; }
+#tiles > .panel { overflow: hidden; }
+.panel.collapsed > :not(.p-head):not(.rz) { display: none !important; }
 .panel.collapsed > .p-head { border-bottom: 0; }
-.vsplit { flex: none; width: var(--gap); cursor: col-resize; position: relative; touch-action: none; }
-.hsplit { flex: none; height: var(--gap); cursor: row-resize; position: relative; touch-action: none; }
-.vsplit::after, .hsplit::after { content: ""; position: absolute; border-radius: 2px; transition: background .12s; }
-.vsplit::after { top: 0; bottom: 0; left: calc(50% - 1px); width: 2px; }
-.hsplit::after { left: 0; right: 0; top: calc(50% - 1px); height: 2px; }
-.vsplit:hover::after, .hsplit:hover::after, .vsplit.drag::after, .hsplit.drag::after, .vsplit:focus-visible::after, .hsplit:focus-visible::after { background: var(--accent); }
-.hsplit.off { cursor: default; } .hsplit.off::after { display: none; }
-.vsplit:focus-visible, .hsplit:focus-visible { outline: none; }
+.grab { cursor: grab; }
+body.moving, body.moving * { cursor: grabbing !important; }
+.leaf.lifted { opacity: .5; }
+/* The lines between panels. */
+.split { position: absolute; z-index: 5; touch-action: none; }
+.split[hidden] { display: none; }
+.split.v { cursor: col-resize; }
+.split.h { cursor: row-resize; }
+.split::after { content: ""; position: absolute; border-radius: 2px; transition: background .12s; }
+.split.v::after { top: 0; bottom: 0; left: calc(50% - 1px); width: 2px; }
+.split.h::after { left: 0; right: 0; top: calc(50% - 1px); height: 2px; }
+.split:hover::after, .split.drag::after, .split:focus-visible::after { background: var(--accent); }
+.split.off { cursor: default; } .split.off::after { display: none; }
+.split:focus-visible { outline: none; }
+/* Dragging a panel: where it would land, and a small label at the pointer. */
+#drop-hint { position: absolute; z-index: 30; pointer-events: none; border: 2px dashed var(--accent); border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent); display: grid; place-items: center; color: var(--text); font-weight: 600; transition: all .08s; }
+#drop-hint[hidden] { display: none; }
+#move-ghost { position: fixed; z-index: 200; pointer-events: none; padding: 4px 10px; border-radius: 7px; background: var(--panel); border: 1px solid var(--accent); color: var(--text); font-size: .85em; box-shadow: var(--shadow); white-space: nowrap; }
+#move-ghost[hidden] { display: none; }
+/* Free-floating: resize from any edge or corner. */
+.rz { display: none; position: absolute; z-index: 6; }
+body.floating .leaf > .rz { display: block; }
+body.floating .leaf { box-shadow: 0 6px 22px rgba(0, 0, 0, .35); }
+.rz-n, .rz-s { left: 10px; right: 10px; height: 7px; cursor: ns-resize; }
+.rz-e, .rz-w { top: 10px; bottom: 10px; width: 7px; cursor: ew-resize; }
+.rz-n { top: -3px; } .rz-s { bottom: -3px; } .rz-e { right: -3px; } .rz-w { left: -3px; }
+.rz-ne, .rz-nw, .rz-se, .rz-sw { width: 12px; height: 12px; }
+.rz-ne { top: -3px; right: -3px; cursor: nesw-resize; } .rz-sw { bottom: -3px; left: -3px; cursor: nesw-resize; }
+.rz-nw { top: -3px; left: -3px; cursor: nwse-resize; } .rz-se { bottom: -3px; right: -3px; cursor: nwse-resize; }
+/* A panel made bigger covers everything, whatever its place. */
+#tiles .leaf.panel.max { left: calc(var(--rail-w) + 10px) !important; top: calc(var(--top-h) + 10px) !important; right: 12px !important;
+  bottom: calc(var(--status-h) + 10px) !important; width: auto !important; height: auto !important; z-index: 60 !important; }
+#tiles .leaf:has(.panel.max) { z-index: 60 !important; }
 body.dragging, body.dragging * { user-select: none !important; }
 
 
-#main { flex: 1; min-width: 340px; min-height: 0; display: flex; flex-direction: column; gap: var(--gap); padding: var(--gap); position: relative; }
+#main { display: flex; flex-direction: column; gap: var(--gap); }
 #thread-panel { flex: 1; min-height: 0; }
 #queue-panel { flex: none; max-height: 26%; }
 #stage { flex: none; padding: 5px 12px; gap: 10px; }
@@ -135,6 +158,8 @@ body.dragging, body.dragging * { user-select: none !important; }
 }
 .sb-item { display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; border: 0; background: transparent; color: inherit; white-space: nowrap; border-radius: 0; flex: none; }
 button.sb-item:hover { background: var(--raise); color: var(--text); }
+.sb-item.warn { color: var(--warn); font-weight: 600; }
+.sb-item[hidden] { display: none; }
 #sb-phase { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 #status .usage { display: flex; flex-direction: row; gap: 12px; font-size: 1em; }
 #status .usage-row { display: inline-grid; grid-template-columns: auto 56px 32px; gap: 6px; }
@@ -193,7 +218,7 @@ button.sb-item:hover { background: var(--raise); color: var(--text); }
 .u-h:first-child { margin-top: 2px; }
 .u-h small { color: var(--faint); font-weight: 400; margin-left: auto; }
 .who-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--accent); }
-.who-dot[data-who="claude"] { background: var(--claude); } .who-dot[data-who="gemini"] { background: var(--gemini); }
+.who-dot[data-who="claude"] { background: var(--claude); } .who-dot[data-who="gemini"] { background: var(--gemini); } .who-dot[data-who="chatgpt"] { background: var(--chatgpt); }
 .meter { margin: 0 0 8px; }
 .meter-top { display: flex; justify-content: space-between; font-size: .8em; color: var(--muted); }
 .meter-top b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
@@ -273,21 +298,38 @@ button.sb-item:hover { background: var(--raise); color: var(--text); }
 .row.col textarea { resize: vertical; min-height: 64px; }
 
 /* ---------- focus mode: only the conversation ---------- */
-body.zen .dock, body.zen .vsplit, body.zen #rail-panels, body.zen #rail .rail-sep { display: none !important; }
-body.zen #main { max-width: 1040px; margin: 0 auto; width: 100%; }
+body.zen #rail-panels, body.zen #rail .rail-sep { display: none !important; }
 
 /* ---------- smaller windows ---------- */
 @media (max-width: 1500px) { .chip span:last-child { display: none; } .chip { padding: .36em; } }
 @media (max-width: 1280px) { .brand-name { display: none; } #session-title { max-width: 200px; } .foot-hint { display: none; } }
-@media (max-width: 1100px) { .presets button { padding: .18em .45em; } #sb-gemini, #sb-model { display: none; } }
+@media (max-width: 1100px) { .presets button { padding: .18em .45em; } #sb-gemini, #sb-chatgpt, #sb-model { display: none; } }
 @media (max-width: 900px) {
-  #dock-right, .vsplit[data-side="right"] { display: none !important; }
   .presets { display: none; }
 }
 @media (max-width: 680px) {
-  #dock-left, .vsplit { display: none !important; }
   #rail { display: none; }
   .composer-foot .foot-label { display: none; }
   .seg.mini { overflow-x: auto; }
   #status .usage-row:last-child, .sb-music { display: none; }
 }
+
+/* ---------- a program in the middle ---------- */
+/* The program's own window sits on #av-slot; what is drawn here only shows while it is away. */
+#appview { display: flex; flex-direction: column; }
+#appview[hidden] { display: none !important; }
+.av-head { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 3px 6px 3px 10px; border: 1px solid var(--line); border-bottom: 0; border-radius: 10px 10px 0 0; background: var(--panel); }
+.av-icon { display: grid; place-items: center; color: var(--accent-hi, var(--accent)); }
+#av-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.av-title { flex: 1; min-width: 0; color: var(--faint); font-size: .8em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.av-slot { flex: 1; min-height: 0; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 0 0 10px 10px; background: var(--panel-2, var(--panel)); }
+.av-note { text-align: center; color: var(--muted); max-width: 340px; padding: 16px; display: flex; flex-direction: column; gap: 6px; }
+.av-note p { margin: 0; color: var(--faint); font-size: .88em; }
+.ap-icon { width: 32px; height: 32px; flex: none; object-fit: contain; }
+.dc-ava.ap-flow { border-radius: 9px; background: linear-gradient(135deg, #4285f4, #9b72cb 55%, #d96570); }
+.dc-ava.ap-flow .i { width: 16px; height: 16px; fill: #fff; stroke: none; }
+.dc-chat.on { background: var(--raise); }
+.dc-chat.on .dc-kind { color: var(--accent-hi, var(--accent)); }
+.ap-wins { max-height: 220px; overflow-y: auto; border-top: 1px solid var(--line); padding-top: 6px; }
+.ap-wins .dc-open { padding: 5px 8px; }
+.ap-none { color: var(--faint); font-size: .85em; padding: 6px 8px; list-style: none; }

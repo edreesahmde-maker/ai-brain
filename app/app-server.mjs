@@ -11,15 +11,19 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
-  askChatGPT, askGemini, generateImage, listGeminiModels, loadState, updateState, runExe, readGeminiUsage,
+  askChatGPT, askGemini, generateImage, listGeminiModels, loadState, updateState, runExe, readGeminiUsage, readChatGPTUsage,
+  generateVideo, googleKeyState, saveGoogleKey, removeGoogleKey, listVideoModels, readVideoUsage, NO_VIDEO_KEY, VIDEO_MODELS, isVeo,
   loadSettings, saveSettings, readJson, writeJson,
   HERE as ROOT, DATA, WORK, MEDIA, LOGS, MEDIA_RE, CODEX_JS, AGY_EXE,
   isDiscordChat,
 } from "../lib.mjs";
 import { musicStatus, musicCommand, musicArt, openApp, stopMusic } from "./music.mjs";
+import buildStamp from "../build-stamp.cjs";
 import { discordStatus, openDiscord, openDiscordChat } from "./discord.mjs";
 
-const VERSION = "2.2.0";
+const VERSION = "3.1.0";
+// Fingerprint of this server's own files when it started (see build-stamp.cjs).
+const BUILD = buildStamp(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const APP = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.join(APP, "public");
 const UPLOADS = path.join(WORK, "uploads");
@@ -51,10 +55,11 @@ const CLAUDE_EXE = findClaude();
 
 // MCP config handed to the brain: only our ai-brain server (nothing else the user has installed).
 const MCP_CFG = path.join(DATA, "brain-mcp.json");
-// key = the one-task key that lets the approve tool ask the user (only while access is "ask").
+// key = the one-task key that lets the approve tool ask the user (only while access is "ask" or "auto").
 // It can only ASK; the answer always comes from a click in the window.
 function writeMcpConfig(s = loadSettings(), key = null) {
-  const env = { AI_BRAIN_CHATGPT: s.chatgptEnabled ? "1" : "0", BRAIN_DATA_DIR: DATA };
+  const env = { AI_BRAIN_CHATGPT: s.chatgptEnabled ? "1" : "0", BRAIN_DATA_DIR: DATA, AI_BRAIN_FLOW: s.flowBrain ? "1" : "0", AI_BRAIN_APP_URL: `http://${HOST}:${PORT}` };
+  for (const k of ["BRAIN_FLOW_PORT", "BRAIN_FLOW_ORIGIN"]) if (process.env[k]) env[k] = process.env[k];
   if (key) Object.assign(env, { AI_BRAIN_APPROVE_URL: `http://${HOST}:${PORT}/api/approval/ask`, AI_BRAIN_APPROVE_KEY: key });
   writeJson(MCP_CFG, { mcpServers: { "ai-brain": { command: process.execPath, args: [path.join(ROOT, "server.mjs")], env } } });
 }
@@ -76,15 +81,21 @@ function folderProblem(f) {
   return "";
 }
 const usableFolders = (s) => [...new Set(s.folders.map((f) => path.resolve(f)))].filter((f) => !folderProblem(f));
-const HELPER_TOOLS = new Set(["ask_gemini", "ask_chatgpt", "ask_both", "generate_image"]);
+const HELPER_TOOLS = new Set(["ask_gemini", "ask_chatgpt", "ask_both", "generate_image", "generate_video", "flow_make_video", "flow_save_videos"]);
+const FLOW_TOOLS = ["flow_make_video", "flow_look", "flow_click", "flow_type", "flow_wait", "flow_save_videos"];
 const ASK_RULES = JSON.stringify({ permissions: { ask: ["PowerShell", "Bash", "Write", "Edit", "NotebookEdit"] } });
 const brainTools = (s) =>
-  (s.chatgptEnabled ? ["ask_chatgpt", "ask_gemini", "ask_both", "generate_image"] : ["ask_gemini", "generate_image"]).map((t) => `mcp__ai-brain__${t}`);
+  [...(s.chatgptEnabled ? ["ask_chatgpt", "ask_gemini", "ask_both", "generate_image"] : ["ask_gemini", "generate_image"]),
+    ...(googleKeyState().connected ? ["generate_video"] : []), ...(s.flowBrain ? FLOW_TOOLS : [])].map((t) => `mcp__ai-brain__${t}`);
+const videoName = (id) => VIDEO_MODELS.find((m) => m.id === id)?.label.replace(/ \(.*/, "") || String(id).replace(/^models\//, "");
 
 function systemPrompt(s) {
   const lines = ['You are the BRAIN of the "AI Brain" desktop app. The user types tasks into the app; you coordinate helper AIs:'];
   if (s.chatgptEnabled) lines.push("- ChatGPT (tool ask_chatgpt) - the user's ChatGPT subscription.");
-  lines.push("- Gemini (tool ask_gemini) - the user's Google subscription. Gemini can GENERATE IMAGES (tool generate_image, or ask it). It cannot make video or audio.");
+  lines.push("- Gemini (tool ask_gemini) - the user's Google subscription. Gemini can GENERATE IMAGES (tool generate_image, or ask it). Gemini itself cannot make video or audio.");
+  if (googleKeyState().connected) lines.push(`- VIDEO (tool generate_video) - Google ${videoName(s.videoModel)} makes one short clip (about 8 seconds, with sound) from a description. It costs the user money for every clip and takes a few minutes. Use it only when the user asks for a video, and make exactly as many clips as they asked for (one unless they say otherwise). Write a rich prompt: subject, action, camera movement, style, lighting, sounds. Never retry a failed video more than once.`);
+  else if (!s.flowBrain) lines.push("- Video is not connected: if the user asks for a video, tell them to add their Google API key in Settings > Video (or to open Google Flow from the Apps panel).");
+  if (s.flowBrain) lines.push(`- GOOGLE FLOW (tools flow_make_video, flow_look, flow_click, flow_type, flow_wait, flow_save_videos) - Google's video maker (Veo 3.1) in a window inside AI Brain, using the user's own Google plan (no API key; it uses their Flow credits). ${googleKeyState().connected ? "Prefer generate_video; use Flow when the user asks for Flow or when generate_video fails." : "Use it when the user asks for a video."} Start with flow_make_video (one call per video). If it reports a problem, use flow_look to read the page, then flow_click / flow_type / flow_wait / flow_save_videos like a person would. If Flow asks the user to sign in or to accept something, stop and tell the user. Make only as many videos as the user asked for. You cannot watch the saved video: say what you asked Flow for, never describe sounds or details as if you had seen them.`);
   if (s.chatgptEnabled) {
     lines.push("How to work: decide what each helper is best at, delegate sub-tasks (in parallel with ask_both when useful), compare and combine their answers, check their work, and give the user one clear final answer.");
     lines.push("If a helper fails (for example it is not signed in), carry on with the other one and tell the user briefly.");
@@ -95,11 +106,12 @@ function systemPrompt(s) {
   lines.push("For image requests, write a strong detailed image prompt and use generate_image. You may also answer directly when a helper is not needed.");
   lines.push("You run non-interactively: do not ask follow-up questions unless truly necessary. Your answer is shown to the user as Markdown; keep it well formatted and reasonably concise. When files were created, list their full paths (the app shows those images automatically).");
   lines.push("You can use the Read tool to look at files the user attached (their paths are given in the task).");
-  if (s.access === "ask") {
+  if (s.access === "ask" || s.access === "auto") {
     const folders = usableFolders(s);
-    lines.push(`You MAY create and edit files (Write, Edit) and run PowerShell commands. Every change and every command first waits for the user to click Allow in the app, so work in a few clear steps and say briefly what each step is for. If the user denies a step, do not try the same thing another way; tell them what you wanted to do and why.`);
+    if (s.access === "ask") lines.push(`You MAY create and edit files (Write, Edit) and run PowerShell commands. Every change and every command first waits for the user to click Allow in the app, so work in a few clear steps and say briefly what each step is for. If the user denies a step, do not try the same thing another way; tell them what you wanted to do and why.`);
+    else lines.push(`You MAY create and edit files (Write, Edit) and run PowerShell commands. The user switched on "Always allow", so nothing waits for a click: every change and command runs right away. That is trust, so be careful: work in a few clear steps, say briefly what each step does, never delete or overwrite anything the task did not ask for, and when a step could lose the user's work, make a copy first. If a step is refused, do not try the same thing another way; tell the user what you wanted to do and why.`);
     lines.push(`Your working folder is ${WORK}.${folders.length ? ` The user also gave you these folders: ${folders.join("; ")}.` : ""} The Write and Edit tools only work inside those folders; anywhere else you need a PowerShell command (which also needs the user's OK).`);
-    lines.push("Never read or change Discord's data, the .claude, .codex or .gemini folders, or AI Brain's brain-mcp.json. Those requests are always refused.");
+    lines.push("Never read or change Discord's data, the .claude, .codex or .gemini folders, or AI Brain's brain-mcp.json and google-key.json. Those requests are always refused.");
   } else {
     lines.push("You can NOT change files or run commands in this app right now. If a task needs that, say so and tell the user they can switch it on in Settings > The brain > File and command access (the app then asks them before every change).");
   }
@@ -218,11 +230,13 @@ function lifetimeStats() {
     sessions: 0, tasks: 0, answers: 0, helperCalls: 0, gemini: 0, chatgpt: 0, seconds: 0, pictures: 0, saved: 0, days: [],
     claude: { all: tok(), today: tok(), session: tok(), last: null },
     geminiUse: { all: { calls: 0, failed: 0, tokens: 0, pictures: 0 }, today: { calls: 0, failed: 0, tokens: 0, pictures: 0 }, lastQuota: null },
+    videoUse: readVideoUsage(),
+    chatgptUse: { all: { calls: 0, failed: 0, in: 0, cached: 0, out: 0 }, today: { calls: 0, failed: 0, in: 0, cached: 0, out: 0 }, limits: null },
   };
   const two = (n) => String(n).padStart(2, "0");
   const dayKey = (t) => { const d = new Date(t); return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`; };
   const today = dayKey(Date.now());
-  const perDay = new Map(), perDayGemini = new Map();
+  const perDay = new Map(), perDayGemini = new Map(), perDayChatGPT = new Map();
   const bump = (m, k) => m.set(k, (m.get(k) || 0) + 1);
   const add = (b, u) => { b.in += u.in || 0; b.cached += u.cached || 0; b.out += u.out || 0; b.cost += u.cost || 0; };
   for (const s of all) {
@@ -258,10 +272,20 @@ function lifetimeStats() {
     }
     bump(perDayGemini, dayKey(g.t));
   }
+  for (const c of readChatGPTUsage()) {
+    const isToday = dayKey(c.t) === today;
+    for (const b of isToday ? [out.chatgptUse.all, out.chatgptUse.today] : [out.chatgptUse.all]) {
+      b.calls++;
+      if (!c.ok) b.failed++;
+      b.in += c.in || 0; b.cached += c.cached || 0; b.out += c.out || 0;
+    }
+    if (c.limits && typeof c.limits === "object") out.chatgptUse.limits = { t: c.t, short: c.limits.short || null, long: c.limits.long || null };
+    bump(perDayChatGPT, dayKey(c.t));
+  }
   for (const b of [out.claude.all, out.claude.today, out.claude.session]) b.cost = Math.round(b.cost * 10000) / 10000;
   for (let i = 13; i >= 0; i--) {
     const k = dayKey(Date.now() - i * 86_400_000);
-    out.days.push({ day: k, tasks: perDay.get(k) || 0, gemini: perDayGemini.get(k) || 0 });
+    out.days.push({ day: k, tasks: perDay.get(k) || 0, gemini: perDayGemini.get(k) || 0, chatgpt: perDayChatGPT.get(k) || 0 });
   }
   out.pictures = listMediaFiles().length;
   out.saved = loadSaved().length;
@@ -376,7 +400,7 @@ function forbidden(input) {
   walk(input);
   const t = all.join("\n").toLowerCase().replace(/\\+/g, "/");
   if (t.includes("discord") && /appdata|leveldb|local storage|token/.test(t)) return true;
-  return /[/~]\.(claude|codex|gemini)\b|brain-mcp\.json/.test(t);
+  return /[/~]\.(claude|codex|gemini)\b|brain-mcp\.json|google-key|gemini_api_key|google_api_key/.test(t);
 }
 function describe(tool, input = {}) {
   const clip = (v, n) => { const s = String(v ?? ""); return s.length > n ? `${s.slice(0, n)}\n… (${s.length - n} more characters)` : s; };
@@ -405,8 +429,11 @@ function askApproval(body) {
   a.answer = new Promise((resolve) => {
     a.resolve = resolve;
     if (!brain) return finishApproval(a, false, "no task is running");
-    if (loadSettings().access !== "ask") return finishApproval(a, false, "file and command access is switched off in Settings");
+    const access = loadSettings().access;
+    if (access !== "ask" && access !== "auto") return finishApproval(a, false, "file and command access is switched off in Settings");
     if (forbidden(input)) return finishApproval(a, false, "AI Brain never lets the brain touch sign-in data or its own approval key");
+    // "Always allow": no question, but it still goes through here so the two checks above and the log apply.
+    if (access === "auto") { a.done = true; emit({ type: "log", level: "info", text: `Allowed (always allow is on): ${oneLine(a)}` }); return resolve({ behavior: "allow" }); }
     if (allowFilesThisRun && FILE_TOOLS.has(tool)) { a.done = true; emit({ type: "log", level: "info", text: `Allowed (all file changes for this task): ${oneLine(a)}` }); return resolve({ behavior: "allow" }); }
     if (!clients.size) return finishApproval(a, false, "the AI Brain window was not open to ask you");
     approvals.set(a.id, a);
@@ -433,8 +460,8 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
   if (files.length) prompt += `\n\nAttached files:\n${files.join("\n")}`;
   if (mode !== "auto") prompt += `\n\n[${MODES[mode]}]`;
 
-  // access "ask": a new key for this task only; old keys stop working.
-  const ask = s.access === "ask";
+  // access "ask" or "auto": a new key for this task only; old keys stop working.
+  const ask = s.access === "ask" || s.access === "auto";
   runKey = ask ? crypto.randomBytes(24).toString("hex") : null;
   allowFilesThisRun = false;
   writeMcpConfig(s, runKey);
@@ -522,8 +549,9 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
             emit({ type: "call", id: c.id + ":g", from: "claude", to: "gemini", prompt: p });
           } else {
             const to = tool === "ask_chatgpt" ? "chatgpt" : "gemini";
-            calls.set(c.id, { to });
-            emit({ type: "call", id: c.id, from: "claude", to, prompt: tool === "generate_image" ? `Generate image: ${p}` : p });
+            const video = tool === "generate_video" || tool.startsWith("flow_");
+            calls.set(c.id, { to, video });
+            emit({ type: "call", id: c.id, from: "claude", to, video, prompt: tool === "generate_image" ? `Generate image: ${p}` : tool === "flow_save_videos" ? "Save the new video from Google Flow" : tool === "flow_make_video" ? `Google Flow video: ${p}` : video ? `Generate video: ${p}` : p });
           }
         }
       }
@@ -545,8 +573,8 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
           noteResult("chatgpt", !ce); noteResult("gemini", !ge);
         } else {
           const images = mediaFrom(txt);
-          emit({ type: "reply", id: c.tool_use_id, to: call.to, text: txt, isError, images });
-          noteResult(call.to, !isError);
+          emit({ type: "reply", id: c.tool_use_id, to: call.to, text: txt, isError, images, video: !!call.video });
+          if (!call.video) noteResult(call.to, !isError); // a video problem says nothing about Gemini itself
           if (images.length) send({ type: "media" });
         }
         if (!calls.size) setPhase("thinking");
@@ -627,7 +655,7 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
 }
 
 // ---------- direct messages to one helper ----------
-const direct = { chatgpt: null, gemini: null }; // AbortController while a direct message is running
+const direct = { chatgpt: null, gemini: null, video: null }; // AbortController while a direct message (or a video) is running
 function directAsk(to, text, { image = false } = {}) {
   const ac = new AbortController();
   direct[to] = ac;
@@ -655,6 +683,40 @@ function directAsk(to, text, { image = false } = {}) {
   return id;
 }
 
+// A video made from the Video Studio. It does not use the helpers' conversations, so it can run next to a task.
+function directVideo(text, opts) {
+  const ac = new AbortController();
+  direct.video = ac;
+  const id = `direct-${newId()}`;
+  setTitleFrom(text);
+  emit({ type: "call", id, from: "you", to: "gemini", video: true, prompt: `Generate video: ${text}` });
+  emit({ type: "log", level: "info", text: `Video: asking Google ${videoName(opts.model || loadSettings().videoModel)}. This takes a few minutes.` });
+  send({ type: "direct", who: "video", value: true });
+  (async () => {
+    try {
+      const r = await generateVideo(text, { ...opts, signal: ac.signal });
+      emit({ type: "reply", id, to: "gemini", text: r.text, isError: false, images: toUrls(r.images), video: true });
+      send({ type: "media" });
+    } catch (e) {
+      if (ac.signal.aborted || e?.stopped) emit({ type: "reply", id, to: "gemini", text: "Stopped.", isError: false, stopped: true, images: [], video: true });
+      else emit({ type: "reply", id, to: "gemini", text: String(e?.message || e), isError: true, images: [], video: true });
+    } finally {
+      direct.video = null;
+      send({ type: "direct", who: "video", value: false });
+      flushSession();
+    }
+  })();
+  return id;
+}
+let videoModels = null, videoModelsAt = 0;
+async function videoInfo() {
+  const key = googleKeyState();
+  if (!videoModels || Date.now() - videoModelsAt > 10 * 60_000) { videoModels = await listVideoModels(); videoModelsAt = Date.now(); }
+  const s = loadSettings();
+  const models = videoModels.some((m) => m.id === s.videoModel) ? videoModels : [...videoModels, { id: s.videoModel, label: s.videoModel }];
+  return { ...key, models, model: s.videoModel, limit: s.videoDailyLimit, usage: readVideoUsage(), busy: !!direct.video };
+}
+
 // ---------- sign-in status ----------
 let statusCache = null, statusAt = 0;
 async function getStatus(force) {
@@ -678,6 +740,7 @@ async function getStatus(force) {
       ok: geminiInstalled && lastOk.gemini !== false,
       detail: !geminiInstalled ? "Antigravity CLI (agy) not found" : lastOk.gemini === false ? "Last request failed" : "Ready (Antigravity)",
     },
+    video: googleKeyState().connected ? { ok: true, detail: `Ready (${videoName(s.videoModel)})` } : { ok: false, off: true, detail: "Not connected - add your Google API key in Settings" },
     about: { version: VERSION, node: process.version, dataDir: DATA, test: !!FAKE_BRAIN },
   };
   statusAt = Date.now();
@@ -739,12 +802,24 @@ function readBody(req, limit = 30 * 1024 * 1024) {
     req.on("error", reject);
   });
 }
-function sendFile(res, dir, rel, extra = {}) {
+function sendFile(res, dir, rel, extra = {}, range = "") {
   const file = path.resolve(dir, rel);
   if (!inside(dir, file) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
     res.writeHead(404, BASE_HEADERS); res.end("Not found"); return;
   }
-  res.writeHead(200, { ...BASE_HEADERS, "Content-Type": TYPES[path.extname(file).toLowerCase()] || "application/octet-stream", "Cache-Control": "no-cache", ...extra });
+  const head = { ...BASE_HEADERS, "Content-Type": TYPES[path.extname(file).toLowerCase()] || "application/octet-stream", "Cache-Control": "no-cache", "Accept-Ranges": "bytes", ...extra };
+  // A part of the file (the video player asks for these when you jump around in a video).
+  const size = fs.statSync(file).size;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(range || "");
+  if (m && (m[1] || m[2]) && size > 0) {
+    let from = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]));
+    let to = m[1] && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+    if (from > to || from >= size) { res.writeHead(416, { ...BASE_HEADERS, "Content-Range": `bytes */${size}` }); res.end(); return; }
+    res.writeHead(206, { ...head, "Content-Range": `bytes ${from}-${to}/${size}`, "Content-Length": to - from + 1 });
+    fs.createReadStream(file, { start: from, end: to }).pipe(res);
+    return;
+  }
+  res.writeHead(200, { ...head, "Content-Length": size });
   fs.createReadStream(file).pipe(res);
 }
 const hello = () => ({
@@ -753,7 +828,7 @@ const hello = () => ({
 const ready = () => ({
   type: "ready", busy: !!brain, phase, live, usage: lastUsage,
   queue: queue.map(({ id, text }) => ({ id, text })),
-  direct: { chatgpt: !!direct.chatgpt, gemini: !!direct.gemini },
+  direct: { chatgpt: !!direct.chatgpt, gemini: !!direct.gemini, video: !!direct.video },
   approvals: [...approvals.values()].map(approvalView), t: Date.now(),
 });
 // Pictures that were deleted since are left out of a replay, so the page never asks for a missing file.
@@ -773,7 +848,7 @@ function replayTo(res) {
   for (const ev of session.events) write(res, forReplay(ev));
   write(res, ready());
 }
-const idle = () => !brain && !directActive() && !queue.length;
+const idle = () => !brain && !directActive() && !direct.video && !queue.length;
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -783,7 +858,7 @@ const server = http.createServer(async (req, res) => {
     const p = url.pathname;
 
     if (req.method === "GET") {
-      if (p === "/api/ping") return json(res, 200, { app: "ai-brain", version: VERSION });
+      if (p === "/api/ping") return json(res, 200, { app: "ai-brain", version: VERSION, build: BUILD });
       if (p === "/events") {
         res.writeHead(200, { ...BASE_HEADERS, "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
         replayTo(res);
@@ -797,6 +872,7 @@ const server = http.createServer(async (req, res) => {
       if (p === "/api/status") return json(res, 200, await getStatus(url.searchParams.has("force")));
       if (p === "/api/settings") return json(res, 200, loadSettings());
       if (p === "/api/gemini-models") return json(res, 200, await getGeminiModels());
+      if (p === "/api/video") return json(res, 200, await videoInfo());
       if (p === "/api/sessions") return json(res, 200, listSessions(url.searchParams.get("q")));
       if (p === "/api/session/export") {
         const id = url.searchParams.get("id") || session.id;
@@ -819,8 +895,8 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { ...BASE_HEADERS, "Content-Type": a.mime, "Cache-Control": "no-store" });
         return res.end(a.buf);
       }
-      if (p.startsWith("/media/")) return sendFile(res, MEDIA, decodeURIComponent(p.slice(7)), url.searchParams.has("download") ? { "Content-Disposition": "attachment" } : {});
-      if (p.startsWith("/uploads/")) return sendFile(res, UPLOADS, decodeURIComponent(p.slice(9)));
+      if (p.startsWith("/media/")) return sendFile(res, MEDIA, decodeURIComponent(p.slice(7)), url.searchParams.has("download") ? { "Content-Disposition": "attachment" } : {}, req.headers.range);
+      if (p.startsWith("/uploads/")) return sendFile(res, UPLOADS, decodeURIComponent(p.slice(9)), {}, req.headers.range);
       if (p.startsWith("/custom/")) return sendFile(res, CUSTOM, decodeURIComponent(p.slice(8)));
       return sendFile(res, PUB, p === "/" ? "index.html" : decodeURIComponent(p.slice(1)));
     }
@@ -897,7 +973,45 @@ const server = http.createServer(async (req, res) => {
         if (brain) return json(res, 409, { error: "The brain is using the helpers right now - wait until the task finishes." });
         return json(res, 200, { ok: true, id: directAsk(to, text, { image }) });
       }
+      if (p === "/api/video") {
+        const text = String(body.text || "").trim();
+        if (!text) return json(res, 400, { error: "Describe the video first." });
+        if (text.length > 8000) return json(res, 413, { error: "That description is too long." });
+        if (!googleKeyState().connected) return json(res, 409, { error: NO_VIDEO_KEY, nokey: true });
+        if (direct.video) return json(res, 409, { error: "A video is still being made. Wait for it, or stop it first." });
+        const s = loadSettings();
+        const limit = s.videoDailyLimit;
+        if (limit && readVideoUsage().today >= limit) return json(res, 409, { error: `Today's video limit (${limit}) is reached. You can raise it in Settings, under Video.` });
+        const opts = {
+          model: typeof body.model === "string" && body.model ? body.model : undefined,
+          aspect: body.aspect === "9:16" ? "9:16" : "16:9",
+          seconds: Number.isInteger(body.seconds) ? body.seconds : undefined,
+          resolution: body.resolution === "1080p" ? "1080p" : "720p",
+        };
+        if (body.image) {
+          // A picture from the Gallery or an attachment as the first frame.
+          const m = /^\/(media|uploads)\/([^/?#]+)$/.exec(String(body.image));
+          const file = m ? path.join(m[1] === "media" ? MEDIA : UPLOADS, decodeURIComponent(m[2])) : "";
+          if (!m || !inside(m[1] === "media" ? MEDIA : UPLOADS, file) || !/\.(png|jpe?g|webp)$/i.test(file) || !fs.existsSync(file)) return json(res, 400, { error: "That picture cannot be used as the start of a video." });
+          if (!isVeo(opts.model || s.videoModel)) return json(res, 400, { error: "Starting from a picture needs a Veo model. Pick one in Settings, under Video." });
+          opts.imagePath = file;
+        }
+        return json(res, 200, { ok: true, id: directVideo(text, opts) });
+      }
+      if (p === "/api/google-key") {
+        if (direct.video) return json(res, 409, { error: "A video is being made. Wait for it, or stop it first." });
+        let state;
+        if (body.remove) state = removeGoogleKey();
+        else { try { state = await saveGoogleKey(body.key); } catch (e) { return json(res, 400, { error: String(e?.message || e) }); } }
+        videoModels = null;
+        statusAt = 0;
+        writeMcpConfig();
+        emit({ type: "log", level: "info", text: state.connected ? "Video: the Google key was saved." : "Video: the Google key was removed." });
+        send({ type: "video_state" });
+        return json(res, 200, await videoInfo());
+      }
       if (p === "/api/ask/stop") {
+        if (body.to === "video") { direct.video?.abort(); return json(res, 200, { ok: true }); }
         const to = body.to === "chatgpt" ? "chatgpt" : "gemini";
         direct[to]?.abort();
         return json(res, 200, { ok: true });
@@ -967,7 +1081,8 @@ const server = http.createServer(async (req, res) => {
         if ("discordChats" in body && !(Array.isArray(body.discordChats) && body.discordChats.length <= 24 && body.discordChats.every(isDiscordChat)))
           return json(res, 400, { error: "That chat could not be pinned. Use a name and a Discord chat link." });
         const settings = saveSettings(body);
-        if (settings.access !== "ask") denyAllApprovals("file and command access was switched off");
+        if (settings.access === "auto") { for (const a of [...approvals.values()]) finishApproval(a, true, "always allow was switched on"); }
+        else if (settings.access !== "ask") denyAllApprovals("file and command access was switched off");
         if (body.customBg === null) for (const f of fs.readdirSync(CUSTOM)) { try { fs.unlinkSync(path.join(CUSTOM, f)); } catch {} }
         writeMcpConfig(settings);
         statusAt = 0;
@@ -1030,6 +1145,11 @@ const server = http.createServer(async (req, res) => {
         statusAt = 0;
         return json(res, 200, { ok: true });
       }
+      // The brain's Flow tools ask the window to open Google Flow (the window decides; it only opens Flow).
+      if (p === "/api/flow/open") {
+        send({ type: "flow-open" });
+        return json(res, 200, { ok: true, windows: clients.size });
+      }
       if (p === "/api/shutdown") {
         json(res, 200, { ok: true });
         shutdown();
@@ -1047,7 +1167,7 @@ function shutdown() {
   stopMusic();
   queue = [];
   if (brain) { stoppedByUser = true; killTree(brain); }
-  for (const who of ["chatgpt", "gemini"]) direct[who]?.abort();
+  for (const who of ["chatgpt", "gemini", "video"]) direct[who]?.abort();
   try { flushSession(); } catch {}
   setTimeout(() => process.exit(0), 400);
 }

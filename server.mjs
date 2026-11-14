@@ -6,12 +6,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import http from "node:http";
-import { askChatGPT, askGemini, generateImage, resetConversations, LOGS } from "./lib.mjs";
+import { askChatGPT, askGemini, generateImage, generateVideo, googleKeyState, resetConversations, LOGS } from "./lib.mjs";
+import { flowLook, flowClick, flowType, flowWait, flowSaveVideos, flowMakeVideo } from "./flow.mjs";
 
 // The AI Brain app sets AI_BRAIN_CHATGPT=0 while ChatGPT is switched off in its settings.
 const CHATGPT = process.env.AI_BRAIN_CHATGPT !== "0";
 
-const server = new McpServer({ name: "ai-brain", version: "2.1.0" });
+const server = new McpServer({ name: "ai-brain", version: "3.1.0" });
 
 const text = (t) => ({ content: [{ type: "text", text: t }] });
 const fail = (e) => ({ content: [{ type: "text", text: String(e?.message || e) }], isError: true });
@@ -75,6 +76,77 @@ server.registerTool(
     } catch (e) { return fail(e); }
   }
 );
+
+// Video is only offered once the user added a Google API key in the app's settings.
+if (googleKeyState().connected) server.registerTool(
+  "generate_video",
+  {
+    title: "Generate video (Google Veo)",
+    description:
+      "Make ONE short video clip (about 8 seconds, with sound) from a detailed description, using Google's video model. " +
+      "It costs the user money per video and takes a few minutes: call it only when the user asked for a video, once per video they asked for. " +
+      "Returns the saved file path. Write a rich prompt: subject, action, camera movement, style, lighting, sounds.",
+    inputSchema: {
+      description: z.string().describe("Detailed description of the video"),
+      aspect: z.enum(["16:9", "9:16"]).optional().describe("16:9 = wide (default), 9:16 = tall"),
+      seconds: z.number().int().min(4).max(10).optional().describe("Length in seconds (default: the longest the model allows)"),
+    },
+  },
+  async ({ description, aspect, seconds }) => {
+    try {
+      return text((await generateVideo(description, { aspect, seconds })).text);
+    } catch (e) { return fail(e); }
+  }
+);
+
+// Google Flow (Veo 3.1 through the user's Google plan, no API key): the brain uses the Flow window
+// that AI Brain opened. Switched off with "Let the brain use Google Flow" in Settings.
+if (process.env.AI_BRAIN_FLOW === "1") {
+  const run = (fn) => async (a) => { try { return text(await fn(a)); } catch (e) { return fail(e); } };
+  server.registerTool("flow_make_video", {
+    title: "Make a video in Google Flow",
+    description:
+      "Make ONE video with Google Flow (Veo 3.1, using the user's Google plan credits, no API key): types the description into Flow's prompt box, " +
+      "starts it, waits for the new video and saves it. Returns the saved file path. Takes a few minutes. Call it only when the user asked for a video, once per video. " +
+      "If it reports a problem, use flow_look to see the page and the small flow_ tools to finish by hand. Write a rich prompt: subject, action, camera, style, lighting, sounds.",
+    inputSchema: {
+      description: z.string().describe("Detailed description of the video"),
+      wait_seconds: z.number().int().min(30).max(900).optional().describe("How long to wait for the video (default 480)"),
+    },
+  }, run(({ description, wait_seconds }) => flowMakeVideo(description, wait_seconds)));
+  server.registerTool("flow_look", {
+    title: "Look at Google Flow",
+    description: "Read the Google Flow page that is open in AI Brain: its text, and a numbered list of everything you can click or type in. Use before flow_click / flow_type.",
+    inputSchema: {},
+  }, run(() => flowLook()));
+  server.registerTool("flow_click", {
+    title: "Click in Google Flow",
+    description: "Click a button, tab or link on the Google Flow page, by its number from flow_look or by its words. Only the Flow page is ever touched.",
+    inputSchema: { target: z.string().describe("The number from flow_look, or the words on the button") },
+  }, run(({ target }) => flowClick(target)));
+  server.registerTool("flow_type", {
+    title: "Type in Google Flow",
+    description: "Type text into a text box on the Google Flow page (replacing what is in it). Without field, the biggest text box (the prompt box) is used.",
+    inputSchema: {
+      text: z.string().describe("What to type"),
+      field: z.string().optional().describe("The number or words of the text box from flow_look"),
+      press_enter: z.boolean().optional().describe("Press Enter afterwards"),
+    },
+  }, run(({ text: t, field, press_enter }) => flowType(t, field || "", !!press_enter)));
+  server.registerTool("flow_wait", {
+    title: "Wait for Google Flow",
+    description: "Wait until a new video appears on the Flow page, or until some words appear (for example a finished message). Up to 900 seconds.",
+    inputSchema: {
+      seconds: z.number().int().min(2).max(900).describe("How long to wait at most"),
+      words: z.string().optional().describe("Wait for these words instead of a new video"),
+    },
+  }, run(({ seconds, words }) => flowWait(seconds, words || "")));
+  server.registerTool("flow_save_videos", {
+    title: "Save videos from Google Flow",
+    description: "Save the newest video(s) on the Flow page into the AI Brain gallery. Returns the saved file paths.",
+    inputSchema: { count: z.number().int().min(1).max(8).optional().describe("How many of the newest videos (default 1)") },
+  }, run(({ count }) => flowSaveVideos(count || 1)));
+}
 
 if (CHATGPT) server.registerTool(
   "ask_both",

@@ -1,0 +1,133 @@
+/* AI Brain - version 3 look: depth, light and motion for every theme, plus the Goth theme's own touches.
+   Only colours, shadows, borders and small fades here. Panels, the program view and their parents never get
+   transforms or filters, because the layout and the docked program windows depend on their exact size. */
+
+/* ---------- Goth theme: fonts ---------- */
+@font-face { font-family: "Pirata One"; src: url("vendor/fonts/pirata-one-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Cormorant Garamond"; src: url("vendor/fonts/cormorant-garamond-latin-500-normal.woff2") format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "Cormorant Garamond"; src: url("vendor/fonts/cormorant-garamond-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+
+/* ---------- shared depth and light ---------- */
+.panel { box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, .035); }
+.p-head { background: linear-gradient(180deg, rgba(var(--fx1), .07), rgba(var(--fx1), 0) 85%); }
+.d-head { background: linear-gradient(180deg, rgba(var(--fx1), .08), rgba(var(--fx1), 0)); }
+#top { position: relative; }
+#top::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(var(--fx1), .55) 30%, rgba(var(--fx2), .45) 70%, transparent);
+}
+#status { box-shadow: inset 0 1px 0 rgba(var(--fx1), .1); }
+
+/* conversation cards */
+.msg.claude .card { background: linear-gradient(180deg, rgba(var(--fx1), .05), rgba(var(--fx1), 0) 120px), var(--panel-2); box-shadow: 0 2px 10px rgba(0, 0, 0, .18); }
+.msg.you .bubble { box-shadow: 0 2px 10px rgba(0, 0, 0, .16); }
+.msg { animation: msg-in .24s ease-out backwards; }
+@keyframes msg-in { from { opacity: 0; transform: translateY(5px); } }
+
+/* composer */
+#composer { transition: box-shadow .2s, background .2s; }
+#composer:focus-within { background: linear-gradient(0deg, rgba(var(--fx1), .05), rgba(var(--fx1), 0)); box-shadow: inset 0 1px 0 rgba(var(--fx1), .45); }
+#task { transition: border-color .2s, box-shadow .2s; }
+
+/* dialogs: soft blur behind and a gentle rise */
+.dlg::backdrop { background: rgba(0, 0, 0, .58); backdrop-filter: blur(3px); }
+.dlg[open] { animation: dlg-in .2s cubic-bezier(.2, .8, .2, 1); }
+@keyframes dlg-in { from { opacity: 0; transform: translateY(8px); } }
+.dlg.light[open] { animation: none; }
+
+/* buttons, chips, cards */
+.btn.primary { box-shadow: 0 1px 0 rgba(255, 255, 255, .18) inset, 0 4px 14px rgba(var(--fx1), .18); }
+.chip { transition: border-color .15s, color .15s, background .15s; }
+.icon-btn:active:not(:disabled) { background: rgba(var(--fx1), .16); }
+.kv tbody tr:hover th, .kv tbody tr:hover td { background: var(--raise); }
+.bar i { background: linear-gradient(90deg, var(--accent), var(--accent-hi)); box-shadow: 0 0 8px rgba(var(--fx1), .35); }
+.bar i.warn { background: var(--warn); box-shadow: none; } .bar i.bad { background: var(--err); box-shadow: none; }
+.toast { border-left: 3px solid var(--accent); backdrop-filter: blur(6px); }
+.toast.err { border-left-color: var(--err); } .toast.ok { border-left-color: var(--ok); }
+* { scrollbar-color: rgba(var(--fx1), .28) transparent; }
+
+/* ---------- start screen ---------- */
+#empty .empty-mark { filter: drop-shadow(0 0 18px rgba(var(--fx1), .55)); }
+#empty h1 { background: linear-gradient(180deg, var(--accent-hi), var(--accent)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+#ideas { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.idea { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; gap: 2px 10px; align-items: start; position: relative; overflow: hidden; }
+.idea .idea-ic {
+  grid-row: 1 / span 2; width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center;
+  background: rgba(var(--fx1), .12); border: 1px solid var(--line); color: var(--accent-hi);
+}
+.idea .idea-ic .i { width: 17px; height: 17px; }
+.idea span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.idea::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(260px 80px at 0 0, rgba(var(--fx1), .12), transparent 70%); opacity: 0; transition: opacity .2s; }
+.idea:hover::after { opacity: 1; }
+#mine-ideas { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 12px; }
+#mine-ideas[hidden] { display: none; }
+#mine-ideas .mine-h { width: 100%; text-align: center; font-size: .78em; color: var(--faint); }
+#mine-ideas button { border-radius: 99px; padding: .25em .8em; font-size: .86em; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 900px) { #ideas { grid-template-columns: 1fr 1fr; } }
+
+/* theme picker swatches in the menu */
+.menu .menu-sw { width: 14px; height: 14px; border-radius: 50%; flex: none; box-shadow: 0 0 0 1px rgba(255, 255, 255, .2) inset; }
+
+/* ---------- the plain Dark theme stays quiet ---------- */
+[data-theme="dark"] .p-head, [data-theme="dark"] .d-head, [data-theme="dark"] #composer:focus-within { background: none; }
+[data-theme="dark"] #top::after { background: linear-gradient(90deg, transparent, rgba(var(--fx1), .35), transparent); }
+[data-theme="dark"] .bar i { box-shadow: none; }
+[data-theme="dark"] .btn.primary { box-shadow: none; }
+[data-theme="dark"] #empty h1 { background: none; color: var(--text); }
+[data-theme="dark"] .idea::after { display: none; }
+[data-theme="dark"] .msg.claude .card { background: var(--panel-2); }
+
+/* ---------- Goth: black velvet, amethyst, bone and a little wine ---------- */
+/* Cormorant uses old-style digits by default ("1" looks like "I"); use normal ones everywhere. */
+[data-theme="goth"] { font-variant-numeric: lining-nums tabular-nums; }
+[data-theme="goth"] .tile b { font-family: inherit; font-weight: 700; }
+[data-theme="goth"] .brand-name { font-family: "Pirata One", "Cormorant Garamond", Georgia, serif; font-weight: 400; text-transform: none; letter-spacing: .03em; font-size: 1.5em; line-height: 1; }
+[data-theme="goth"] #empty h1 { font-family: "Pirata One", "Cormorant Garamond", Georgia, serif; font-weight: 400; letter-spacing: .02em; font-size: 2em; }
+[data-theme="goth"] .stage-phase { font-family: "Pirata One", "Cormorant Garamond", Georgia, serif; font-weight: 400; letter-spacing: .03em; font-size: 1.2em; }
+[data-theme="goth"] .p-title h2, [data-theme="goth"] .d-head h2 { font-size: 1.02em; letter-spacing: .14em; }
+[data-theme="goth"] .settings h3, [data-theme="goth"] .help h3, [data-theme="goth"] .prompts h3 { font-size: .95em; letter-spacing: .12em; }
+/* thin double frame and small silver corner marks instead of gold brackets */
+[data-theme="goth"] .panel { box-shadow: var(--shadow), inset 0 0 0 1px rgba(0, 0, 0, .6), inset 0 0 0 2px rgba(var(--fx1), .07), inset 0 0 40px rgba(var(--fx1), .04); }
+[data-theme="goth"] .panel::before, [data-theme="goth"] .panel::after { border-width: 1px; border-color: var(--accent-2); opacity: .9; }
+[data-theme="goth"] .glyph { filter: drop-shadow(0 0 7px rgba(var(--fx1), .7)); opacity: .9; }
+[data-theme="goth"] .msg.you .bubble { border-radius: 14px 14px 3px 14px; }
+[data-theme="goth"] .btn.primary { background: linear-gradient(180deg, #c7a6f0, #8f5fd0); color: #12081c; }
+[data-theme="goth"] .btn.primary:hover:not(:disabled) { background: linear-gradient(180deg, #dcc6fa, #a274e0); }
+[data-theme="goth"] .chip .dot, [data-theme="goth"] .dot.ok { box-shadow: 0 0 6px currentColor; }
+[data-theme="goth"] #top::after { background: linear-gradient(90deg, transparent, rgba(var(--fx2), .6) 20%, rgba(var(--fx1), .7) 50%, rgba(var(--fx2), .6) 80%, transparent); }
+
+.sw-goth { background: radial-gradient(circle at 70% 75%, #5c1430, transparent 55%), linear-gradient(135deg, #0a070d 50%, #3a1e5c); border: 1px solid #b48ae8; }
+.sw-goth svg { fill: #d9c6f2; }
+
+/* ---------- Berserk (fan-made, original artwork): iron plates, blood and embers ---------- */
+[data-theme="berserk"] .brand-name { font-weight: 700; letter-spacing: .2em; }
+[data-theme="berserk"] #empty h1 { font-family: var(--font-head); font-weight: 700; text-transform: uppercase; letter-spacing: .12em; font-size: 1.45em;
+  background: linear-gradient(180deg, #f3e6d4 20%, #c8282f 120%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+[data-theme="berserk"] .stage-phase { font-family: var(--font-head); font-weight: 700; text-transform: uppercase; letter-spacing: .14em; }
+[data-theme="berserk"] .p-title h2, [data-theme="berserk"] .d-head h2 { font-weight: 700; letter-spacing: .18em; }
+[data-theme="berserk"] .settings h3, [data-theme="berserk"] .help h3, [data-theme="berserk"] .prompts h3 { font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+/* heavy iron plate: dark inner rim, a thin cold highlight on top, a faint red heat inside */
+[data-theme="berserk"] .panel { border-color: rgba(150, 140, 134, .26); box-shadow: var(--shadow), inset 0 0 0 1px rgba(0, 0, 0, .75), inset 0 1px 0 rgba(255, 255, 255, .05), inset 0 0 60px rgba(150, 14, 20, .07); }
+[data-theme="berserk"] .panel::before, [data-theme="berserk"] .panel::after { border-width: 3px; border-color: #77706a; opacity: 1; }
+[data-theme="berserk"] .p-head { background: linear-gradient(180deg, rgba(255, 255, 255, .03), rgba(0, 0, 0, 0)), linear-gradient(90deg, rgba(200, 40, 47, .1), transparent 60%); }
+[data-theme="berserk"] #top::after { height: 2px; background: linear-gradient(90deg, transparent, rgba(120, 10, 16, .9) 15%, rgba(230, 60, 50, .9) 50%, rgba(120, 10, 16, .9) 85%, transparent); }
+[data-theme="berserk"] .glyph { filter: drop-shadow(0 0 6px rgba(220, 40, 40, .6)); }
+[data-theme="berserk"] .btn.primary { background: linear-gradient(180deg, #d63a3a, #8a1318); color: #fff2ea; border-color: #e85a50; text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
+[data-theme="berserk"] .btn.primary:hover:not(:disabled) { background: linear-gradient(180deg, #e8524a, #9e1a1f); }
+[data-theme="berserk"] .msg.you .bubble { border-left: 3px solid var(--accent); }
+[data-theme="berserk"] .msg.claude .card { background: linear-gradient(180deg, rgba(200, 40, 47, .06), rgba(0, 0, 0, 0) 120px), var(--panel-2); border-color: rgba(150, 140, 134, .24); }
+[data-theme="berserk"] .idea { border-color: rgba(150, 140, 134, .24); }
+[data-theme="berserk"] .idea .idea-ic { background: rgba(200, 40, 47, .14); border-color: rgba(200, 40, 47, .4); color: #f3c6b4; }
+/* the start screen shows a red eclipse instead of the usual mark */
+.empty-mark.eclipse-mark { display: none; }
+[data-theme="berserk"] #empty .empty-mark { display: none; }
+[data-theme="berserk"] #empty .empty-mark.eclipse-mark { display: inline-block; width: 92px; height: 92px; fill: #d4302f; opacity: 1; background: radial-gradient(circle, #030202 0 33%, rgba(3, 2, 2, 0) 34%); border-radius: 50%;
+  filter: drop-shadow(0 0 10px rgba(230, 40, 40, .75)) drop-shadow(0 0 28px rgba(200, 20, 30, .45)); }
+.sw-berserk { background: radial-gradient(circle at 50% 50%, #030202 0 20%, #3a0a0d 40%, #0a0606 75%); border: 1px solid #c8282f; }
+.sw-berserk svg { fill: #e0443c; }
+
+/* ---------- motion settings ---------- */
+.no-anim .msg, .no-anim .dlg[open] { animation: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .msg, .dlg[open] { animation: none; }
+}
