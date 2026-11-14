@@ -340,10 +340,12 @@
   // ---------- conversation (centre) ----------
   const thread = $("#thread"), emptyEl = $("#empty"), jumpBtn = $("#jump");
   let liveEl = null, liveMd = null, livePhase = null, liveText = "", liveTimer = null;
+  let liveDone = "", liveDoneEl = null, liveTailEl = null; // the finished part of the live answer (see paintLive)
   const atBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 90;
   function scrollDown() { thread.scrollTop = thread.scrollHeight; jumpBtn.hidden = true; }
   function addToThread(el, stick) {
-    if (S.replaying) { emptyEl.hidden = true; liveEl ? thread.insertBefore(el, liveEl) : thread.append(el); return; }
+    // Messages put back when a conversation opens appear at once (no fade-in for each of them).
+    if (S.replaying) { el.classList?.add("old"); emptyEl.hidden = true; liveEl ? thread.insertBefore(el, liveEl) : thread.append(el); return; }
     const s = stick ?? atBottom(thread);
     emptyEl.hidden = true;
     if (liveEl) thread.insertBefore(el, liveEl); else thread.append(el);
@@ -367,7 +369,7 @@
     clearTimeout(liveTimer); liveTimer = null;
     liveEl?.remove();
     liveEl = liveMd = livePhase = null;
-    liveText = "";
+    liveText = ""; liveDone = ""; liveDoneEl = liveTailEl = null;
   }
   // While an answer is still arriving, close any half-written code block or bold
   // marker so the text does not flicker between raw symbols and formatting.
@@ -379,10 +381,36 @@
     if (((lastLine.match(/\*\*/g) || []).length) % 2) t += "**";
     return t;
   }
+  // Where the finished part of a half-written answer ends: the last blank line outside a code
+  // block that is followed by a new paragraph or heading (not a list item, quote, table or
+  // indented text, which may still belong to what came before).
+  function safeCut(t) {
+    const lines = t.split("\n");
+    let cut = 0, pos = 0, fence = false;
+    for (let i = 0; i < lines.length - 1; i++) {
+      const ln = lines[i];
+      if (/^\s*(```|~~~)/.test(ln)) fence = !fence;
+      pos += ln.length + 1;
+      if (!fence && i > 0 && ln.trim() === "" && /^[^\s\-*+\d|>]/.test(lines[i + 1])) cut = pos;
+    }
+    return cut;
+  }
+  // Only the unfinished end of the answer is turned into formatted text again on each update; the
+  // finished paragraphs above it stay as they are (a long answer no longer gets slower and slower).
   function paintLive() {
     if (!liveEl) return;
     const stick = atBottom(thread);
-    if (liveText) liveMd.replaceChildren(renderMd(tidyPartial(liveText))); else liveMd.replaceChildren();
+    if (!liveText) { liveMd.replaceChildren(); liveDone = ""; liveDoneEl = liveTailEl = null; }
+    else {
+      if (!liveDoneEl || !liveText.startsWith(liveDone)) {
+        liveDone = "";
+        liveDoneEl = h("div", { class: "md-part" }); liveTailEl = h("div", { class: "md-part" });
+        liveMd.replaceChildren(liveDoneEl, liveTailEl);
+      }
+      const cut = safeCut(liveText);
+      if (cut > liveDone.length) { liveDoneEl.append(renderMd(liveText.slice(liveDone.length, cut))); liveDone = liveText.slice(0, cut); }
+      liveTailEl.replaceChildren(renderMd(tidyPartial(liveText.slice(liveDone.length))));
+    }
     if (stick) scrollDown();
   }
   function setLive(text) {
@@ -705,6 +733,7 @@
     $("#set-dim-val").textContent = `${s.bgDim}%`;
     $("#set-model").value = s.brainModel;
     $("#set-effort").value = s.effort;
+    $("#set-memory").value = String(s.memoryLimit ?? 100);
     fillGeminiModels();
     $("#set-chatgpt").checked = !!s.chatgptEnabled;
     $("#set-flow-brain").checked = !!s.flowBrain;
@@ -760,6 +789,7 @@
   $("#set-dim").addEventListener("change", (e) => saveSetting({ bgDim: Number(e.target.value) }));
   $("#set-model").addEventListener("change", (e) => saveSetting({ brainModel: e.target.value }));
   $("#set-effort").addEventListener("change", (e) => saveSetting({ effort: e.target.value }));
+  $("#set-memory").addEventListener("change", (e) => saveSetting({ memoryLimit: Number(e.target.value) }));
   $("#set-gemini-model").addEventListener("change", (e) => saveSetting({ geminiModel: e.target.value }));
   $("#set-sounds").addEventListener("change", (e) => { saveSetting({ sounds: e.target.checked }); if (e.target.checked) { S.settings.sounds = true; chime(true); } });
   $("#set-chatgpt").addEventListener("change", async (e) => { await saveSetting({ chatgptEnabled: e.target.checked }); refreshStatus(true); });
@@ -828,6 +858,23 @@
     }
     saveSetting({ notify: e.target.checked });
   });
+  // A background bigger than the screen only costs: an 8K picture takes about 130 MB once opened and is
+  // scaled again on every window resize. Bigger pictures are made screen-sized (as JPG) before upload.
+  async function shrinkBackground(file) {
+    const most = Math.min(3840, Math.max(2560, Math.round(screen.width * (window.devicePixelRatio || 1))));
+    let bmp;
+    try { bmp = await createImageBitmap(file); } catch { return { blob: file, name: file.name }; }
+    const k = most / Math.max(bmp.width, bmp.height * 16 / 9);
+    if (k >= 1) { bmp.close(); return { blob: file, name: file.name }; }
+    const cv = document.createElement("canvas");
+    cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+    const ctx = cv.getContext("2d");
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(bmp, 0, 0, cv.width, cv.height);
+    bmp.close();
+    const blob = await new Promise((ok) => cv.toBlob(ok, "image/jpeg", 0.9));
+    return blob ? { blob, name: file.name.replace(/\.[^.]*$/, "") + ".jpg" } : { blob: file, name: file.name };
+  }
   $("#set-bg-pick").addEventListener("click", () => $("#set-bg-file").click());
   $("#set-bg-file").addEventListener("change", async (e) => {
     const file = e.target.files[0];
@@ -835,7 +882,8 @@
     if (!file) return;
     if (file.size > 20 * 1024 * 1024) { toast("That picture is too large (limit 20 MB).", "err"); return; }
     try {
-      const res = await fetch(`/api/background?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
+      const { blob, name } = await shrinkBackground(file);
+      const res = await fetch(`/api/background?name=${encodeURIComponent(name)}`, { method: "POST", body: blob });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not use that picture.");
       applySettings(data);
@@ -928,10 +976,12 @@
   }
   function fxFrame(now) {
     fx.raf = 0;
-    if (!fxWanted()) { fx.ctx.clearRect(0, 0, fx.w, fx.h); return; }
+    if (!fxWanted()) { if (!fxOn()) fx.ctx.clearRect(0, 0, fx.w, fx.h); return; } // unfocused: they just stand still
     fx.raf = requestAnimationFrame(fxFrame);
+    // Hold still while a panel or line is being dragged (the frame is busy enough then).
+    if (document.body.classList.contains("dragging")) { fx.last = now; return; }
     const dt = Math.min(0.1, (now - fx.last) / 1000);
-    if (dt < 0.03) return;
+    if (dt < 0.04) return; // about 25 drawings a second is plenty for slow sparks
     fx.last = now;
     const speed = S.busy ? 2.2 : 1, ctx = fx.ctx;
     ctx.clearRect(0, 0, fx.w, fx.h);
@@ -950,12 +1000,17 @@
       ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 6.2832); ctx.fill();
     }
   }
-  const fxWanted = () => !!S.settings?.animations && S.settings.theme !== "dark" && !document.hidden && !S.closing;
+  // Only while AI Brain is the window in use: when you work in the program in the middle (or
+  // anywhere else), the sparks stop and leave the graphics card to it.
+  const fxOn = () => !!S.settings?.animations && S.settings.theme !== "dark" && !S.closing;
+  const fxWanted = () => fxOn() && !document.hidden && document.hasFocus();
   function fxKick() {
     if (fxWanted()) { if (!fx.raf) { fx.last = performance.now(); fx.raf = requestAnimationFrame(fxFrame); } }
-    else if (!fx.raf) fx.ctx.clearRect(0, 0, fx.w, fx.h);
+    else if (!fx.raf && !fxOn()) fx.ctx.clearRect(0, 0, fx.w, fx.h);
   }
   window.addEventListener("resize", fxSize);
+  window.addEventListener("focus", fxKick);
+  window.addEventListener("blur", fxKick);
   document.addEventListener("visibilitychange", () => { fxKick(); if (!document.hidden) document.title = pageTitle(); });
 
   // ---------- sound, notification ----------

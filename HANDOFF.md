@@ -7,6 +7,41 @@ The project lives at D:\Projects\ai-brain (moved from C:\Users\KUBE\Projects on 
 shortcut and ~/.claude.json's ai-brain MCP entry point here). Programs: D:\Apps (Blender, Krita, 14 Craft
 apps, portable); PhotoCraft, FilmCraft, AniCraft, ArtCraft Studio, Canva in %LOCALAPPDATA%\Programs.
 
+## Done on 2026-11-14 (late): Claude token use
+Measured from Claude Code's own log of the brain session (41c99b58..., kept 2 days): 272 Opus requests,
+46.4M cache-read + 2.6M cache-write input tokens vs 128k output; context grew to 535k and never compacted
+(Opus has a 1M window). 131 program screenshots (~950 tokens each) and the app_* element lists (~235k
+tokens: the whole list was re-sent with every click/key) made most of it. The cache is already 1 h on this plan.
+- Setting `memoryLimit` (Settings > The brain > Memory limit: 60 / 100 default / 150 / 0 = never), k tokens.
+  startBrain sets CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 and CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=limit/2: Claude Code
+  compacts at window x percent. Verified with the real CLI (2.1.325, Haiku, temp folder): a resumed -p session
+  compacted 57k -> 10k and kept what it was told; 200k x 25% compacted a 56k conversation, 200k x 40% did not.
+  Activity shows "summing it up" / "summed up: Xk -> Yk" (stream-json system status / compact_boundary).
+- server.mjs `show`: after a step (click/type/key/scroll/drag/act) only changed list lines are sent
+  ("same list as before" / "only the changes"), the whole list when numbers shift (>30% changed) or after
+  app_look / app_open.
+- Tests: api-test 296 passed (6 new), ui-test 487 passed.
+
+## Done on 2026-11-14 (late): smoothness + helper speed
+The user said the app was "not smooth" (idle/scrolling/typing, while answers stream, and the docked
+program when moving/resizing). Reviewed with Fable 5.2 as adviser; causes found by reading code, not profiling.
+- Background picture was 7680x4320 (8K, ~130 MB decoded, rescaled on every resize). Now 2560x1440
+  (`custom/bg-mwdnuiyq-2560.jpg`); the original is kept at `%APPDATA%\AI Brain\background-original-8k.jpg`.
+  New uploads are shrunk in the page before upload (`shrinkBackground` in app.js; long side to the screen, 2560-3840).
+- app-dock.cs: "destroyed" and "location changed" hooks were global (every caret/pointer move on the PC);
+  now only for AI Brain's and the program's processes (`Rehook` on the hooks thread, via PostThreadMessage).
+- station.js: panel move/resize and split lines lay out at most once per frame (`perFrame`, flush on let go);
+  while a size is dragged the program goes behind AI Brain and is placed once on let go (`dragging` in appCovered).
+- Embers: ~25 fps, stand still while AI Brain is not the focused window or while dragging.
+- polish.css: `.msg` gets `content-visibility: auto` (off-screen messages skipped; `overflow-clip-margin`
+  keeps shadows); messages replayed when a chat opens (`.msg.old`) don't fade in one by one.
+- Live answer: finished paragraphs are rendered once (`safeCut`, `.md-part`), only the unfinished tail is
+  re-rendered every 90 ms.
+- Helper speed, measured: Claude alone answers in 2-13 s. A one-word answer from ChatGPT (Codex) takes 8-20 s
+  and from Gemini (agy) 8-27 s whatever the options (server side, varies a lot). So a chat where the brain asks
+  a helper takes 30-50 s. Changed: AI Brain's Codex runs leave out the config.toml plugins and `notify`
+  (`codexLean` in lib.mjs; config file untouched), sign-in check at most every 10 min.
+
 ## Done on 2026-11-14: app BRIDGES - the brain works inside programs without the mouse
 - `shell/bridges.cjs` (no Electron; tested alone by `test/bridge-test.mjs`): `kindOf(target)` = craft |
   blender | krita | ""; `prepare(target, argv)` gives how to start it with the bridge on; `Bridge` talks to it.

@@ -169,8 +169,12 @@ if (process.env.AI_BRAIN_APPS === "1" && APP_URL && CONTROL_KEY) {
     req.on("error", () => reject(new Error("AI Brain is not running, so no program can be used.")));
     req.end(body);
   });
-  // The answer to every step: what was done, the picture, and the numbered list.
-  const show = (r) => {
+  // The answer to every step: what was done, the picture, and the numbered list. The list costs many
+  // tokens (thousands of characters, sent again with every click and key), so after a step only what
+  // changed is sent; app_look and app_open always send it whole. A line that is the same (number, kind,
+  // name, value, place) still means the same thing; numbers shift -> too many changes -> the whole list.
+  let lastList = null; // { name, lines } last sent in this task
+  const show = (r, cmd) => {
     if (!r?.ok) return { content: [{ type: "text", text: String(r?.why || "It did not work.") }], isError: true };
     const lines = [];
     if (r.did) lines.push(r.did);
@@ -178,18 +182,27 @@ if (process.env.AI_BRAIN_APPS === "1" && APP_URL && CONTROL_KEY) {
     if (r.front === false) lines.push("Note: the program could not be brought to the front, so something may cover it in the picture.");
     for (const p of r.popups || []) lines.push(`Also open: a window "${p.title}" at (${p.x}, ${p.y}), ${p.w} x ${p.h}.`);
     if (r.items?.length) {
-      lines.push("", "Things on screen (click by number; x,y = top-left corner, then width x height):");
-      for (const it of r.items) {
+      const now = r.items.map((it) => {
         const extra = it.password ? " [password box - never type into it]" : it.value !== undefined && it.value !== "" ? ` value="${it.value}"` : "";
-        lines.push(`${it.n}. ${it.kind} "${it.name}"${extra}${it.disabled ? " (disabled)" : ""} at ${it.x},${it.y} ${it.w}x${it.h}`);
-      }
+        return `${it.n}. ${it.kind} "${it.name}"${extra}${it.disabled ? " (disabled)" : ""} at ${it.x},${it.y} ${it.w}x${it.h}`;
+      });
+      const before = cmd !== "look" && cmd !== "open" && lastList?.name === r.name ? new Set(lastList.lines) : null;
+      const kept = before ? new Set(now) : null;
+      const added = before ? now.filter((l) => !before.has(l)) : now;
+      const gone = before ? lastList.lines.filter((l) => !kept.has(l)).length : 0;
+      lastList = { name: r.name, lines: now };
+      if (before && !added.length && !gone) lines.push("", "Things on screen: the same list as before (same numbers).");
+      else if (before && added.length + gone <= Math.max(8, now.length * 0.3)) {
+        lines.push("", `Things on screen: only the changes since the last list (every other number is as before)${gone ? `; ${gone} thing(s) from it are gone` : ""}. New or changed:`, ...added);
+      } else lines.push("", "Things on screen (click by number; x,y = top-left corner, then width x height):", ...now);
       if (r.complete === false) lines.push("(The list may be incomplete: the program was slow to describe itself.)");
     } else {
+      lastList = null;
       lines.push("", "This program lists nothing it can be clicked by (it draws everything itself, like Blender or a game). Use the picture: click by x and y, and use its keyboard shortcuts.");
     }
     return { content: [{ type: "text", text: lines.join("\n") }, { type: "image", data: r.image.data, mimeType: r.image.type || "image/png" }] };
   };
-  const run = (cmd, pick) => async (a) => { try { return show(await step(cmd, pick ? pick(a) : a)); } catch (e) { return fail(e); } };
+  const run = (cmd, pick) => async (a) => { try { return show(await step(cmd, pick ? pick(a) : a), cmd); } catch (e) { return fail(e); } };
   const spot = {
     target: z.number().int().min(1).optional().describe("The number of the thing from the list (best when it is listed)"),
     x: z.number().optional().describe("Or: x in the picture, in pixels from the left"),

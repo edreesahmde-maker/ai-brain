@@ -465,6 +465,10 @@
         <select id="set-effort">
           <option value="auto">Automatic</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
         </select></label>
+      <label class="row"><span>Memory limit<small>Each message re-sends the whole conversation. Past this size Claude sums it up, so messages use much less of your plan</small></span>
+        <select id="set-memory">
+          <option value="60">60k tokens (uses the least)</option><option value="100">100k tokens (recommended)</option><option value="150">150k tokens</option><option value="0">Never sum up (uses the most)</option>
+        </select></label>
       <label class="row"><span>File and command access<small id="set-access-note">Read only: Claude can read files but not change anything</small></span>
         <select id="set-access">
           <option value="read">Read only</option>

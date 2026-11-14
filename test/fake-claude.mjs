@@ -25,7 +25,7 @@ process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) prompt += chunk;
 
 // The argument log lets tests check exactly how the brain was started.
-try { fs.appendFileSync(path.join(DATA, "fake-claude-args.jsonl"), JSON.stringify({ args, prompt }) + "\n"); } catch {}
+try { fs.appendFileSync(path.join(DATA, "fake-claude-args.jsonl"), JSON.stringify({ args, prompt, compact: [process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || null, process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE || null] }) + "\n"); } catch {}
 
 if (resume === "stale-session") {
   out({ type: "result", subtype: "error_during_execution", is_error: true, errors: ["No conversation found with session ID: stale-session"], session_id: "none" });

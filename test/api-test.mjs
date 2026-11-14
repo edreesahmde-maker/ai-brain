@@ -120,6 +120,8 @@ try {
   ok((await post("/api/settings", { layout: lay })).body.layout === lay, "layout saved as text");
   const s1 = (await post("/api/settings", { theme: "neon", fontSize: 99, bogus: 1, effort: "high", brainModel: "sonnet" })).body;
   ok(s1.theme === "neon" && s1.fontSize === 14 && !("bogus" in s1) && s1.effort === "high", "settings validated");
+  ok(s1.memoryLimit === 100, "memory limit is 100k by default");
+  ok((await post("/api/settings", { memoryLimit: 60 })).body.memoryLimit === 60 && (await post("/api/settings", { memoryLimit: 77 })).body.memoryLimit === 60, "memory limit: only the offered sizes are kept");
   ok(await waitFor((e) => e.type === "settings" && e.settings.theme === "neon"), "settings change broadcast");
   ok((await post("/api/settings", { theme: "goth" })).body.theme === "goth" && (await post("/api/settings", { theme: "gothic" })).body.theme === "goth", "the Goth theme is accepted, unknown themes are not");
   await post("/api/settings", { theme: "neon" });
@@ -298,6 +300,7 @@ try {
   let a = brainArgs().at(-1);
   ok(a.args.includes("--restricted") && a.args.includes("--strict-mcp-config"), "brain started restricted");
   ok(a.args[a.args.indexOf("--model") + 1] === "sonnet" && a.args[a.args.indexOf("--effort") + 1] === "high", "model and effort passed");
+  ok(JSON.stringify(a.compact) === JSON.stringify(["200000", "30"]), "memory limit 60k: Claude Code compacts at 30% of a 200k window", JSON.stringify(a.compact));
   ok(!a.args.includes("--resume"), "first task starts a new Claude session");
   ok(!a.args.some((x) => /ask_chatgpt|ask_both/.test(x)), "ChatGPT tools not offered while off");
   ok(/Gemini is your only helper/.test(a.args[a.args.indexOf("--append-system-prompt") + 1]), "system prompt says ChatGPT is off");
@@ -802,6 +805,15 @@ async function appsTests() {
         await post("/api/apps/control/answer", { id: ev.id, result });
         return { ev, res: await answer(id) };
       };
+      // After a step only the changes in the list are sent (the list is long and costs tokens each time).
+      const items3 = [{ n: 1, kind: "button", name: "Press me", x: 5, y: 6, w: 70, h: 20 }, { n: 2, kind: "edit", name: "Secret", password: true, x: 5, y: 40, w: 90, h: 20 }, { n: 3, kind: "edit", name: "Notes", value: "hi", x: 5, y: 70, w: 90, h: 20 }];
+      const stepRes = (items) => ({ ok: true, did: "Pressed a key.", name: "Test program", front: true, complete: true, image: { w: 800, h: 600, data: png, type: "image/png" }, items });
+      let d = await viaWindow(201, "app_key", { keys: "a" }, stepRes(items3));
+      ok(/the same list as before/.test(d.res.content[0].text) && !/Press me/.test(d.res.content[0].text), "an unchanged list is not sent again", d.res.content[0].text);
+      d = await viaWindow(202, "app_key", { keys: "b" }, stepRes([items3[0], items3[1], { ...items3[2], value: "hib" }]));
+      ok(/only the changes/.test(d.res.content[0].text) && /3\. edit "Notes" value="hib"/.test(d.res.content[0].text) && !/Press me/.test(d.res.content[0].text), "after a step only the changed things are listed", d.res.content[0].text);
+      d = await viaWindow(203, "app_look", {}, stepRes([items3[0], items3[1], { ...items3[2], value: "hib" }]));
+      ok(/1\. button "Press me"/.test(d.res.content[0].text) && /3\. edit "Notes" value="hib"/.test(d.res.content[0].text) && !/same list/.test(d.res.content[0].text), "app_look always sends the whole list", d.res.content[0].text);
       let v = await viaWindow(5, "app_commands", { filter: "export" }, { ok: true, name: "VectorCraft", kind: "craft", live: true, total: 33, filter: "export", more: 0,
         tools: [{ name: "export_file", description: "Export the document", params: ["path", "format"], required: ["path"] }] });
       ok(v.ev.cmd === "bridge" && v.ev.args.filter === "export", "app_commands asks the window for the bridge's commands");

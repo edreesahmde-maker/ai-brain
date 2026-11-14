@@ -667,6 +667,13 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
   emit({ type: "log", level: "info", text: resumed ? "Continuing the conversation with Claude..." : "Starting a new Claude session..." });
 
   const env = { ...process.env, MCP_TOOL_TIMEOUT: "900000", NO_COLOR: "1" };
+  // Every message re-sends the whole conversation, so a long one uses the plan up fast (one kept for two
+  // days reached 535k tokens). Past the memory limit Claude Code sums it up on its own. It compacts at
+  // window x percent, so the window is fixed at 200k (Opus's own is 1M) and the percent is the limit.
+  if (s.memoryLimit) {
+    env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "200000";
+    env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(Math.round(s.memoryLimit / 2));
+  }
   const child = FAKE_BRAIN
     ? spawn(process.execPath, [FAKE_BRAIN, ...args], { cwd: WORK, windowsHide: true, env })
     : spawn(CLAUDE_EXE, args, { cwd: WORK, windowsHide: true, env });
@@ -704,6 +711,11 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
       const link = (ev.mcp_servers || []).find((m) => m.name === "ai-brain")?.status;
       emit({ type: "log", level: "info", text: `Claude online - model ${ev.model}${link ? `; helpers link: ${link}` : ""}` });
       setPhase("thinking");
+    } else if (ev.type === "system" && ev.subtype === "status" && ev.status === "compacting") {
+      emit({ type: "log", level: "info", text: "The conversation is long: Claude is summing it up so each message costs less..." });
+    } else if (ev.type === "system" && ev.subtype === "compact_boundary") {
+      const m = ev.compact_metadata || {}, k = (n) => `${Math.round((Number(n) || 0) / 1000)}k`;
+      emit({ type: "log", level: "info", text: m.pre_tokens ? `Conversation summed up: ${k(m.pre_tokens)} -> ${k(m.post_tokens)} tokens.` : "Conversation summed up." });
     } else if (ev.type === "assistant") {
       for (const c of ev.message?.content || []) {
         if (c.type === "text" && c.text.trim()) { flushSay(); pendingSay = c.text; }

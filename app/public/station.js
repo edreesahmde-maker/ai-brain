@@ -406,6 +406,15 @@
     }
     for (; i < splitEls.length; i++) splitEls[i].hidden = true;
   }
+  // The mouse reports moves faster than the screen draws: lay out at most once per frame.
+  // flush() applies the last move right away (on let go).
+  function perFrame(fn) {
+    let raf = 0, last = null;
+    const run = () => { raf = 0; if (last) { const ev = last; last = null; fn(ev); } };
+    const f = (ev) => { last = ev; if (!raf) raf = requestAnimationFrame(run); };
+    f.flush = () => { if (raf) cancelAnimationFrame(raf); run(); };
+    return f;
+  }
   function makeSplit() {
     const el = h("div", { class: "split", role: "separator", tabindex: "0" });
     el.addEventListener("pointerdown", (e) => {
@@ -416,9 +425,10 @@
       el.setPointerCapture(e.pointerId);
       el.classList.add("drag");
       document.body.classList.add("dragging");
-      const mv = (ev) => set((sp.horiz ? ev.clientX : ev.clientY) - p0);
+      const mv = perFrame((ev) => set((sp.horiz ? ev.clientX : ev.clientY) - p0));
       const up = () => {
         el.removeEventListener("pointermove", mv);
+        mv.flush();
         el.classList.remove("drag");
         document.body.classList.remove("dragging");
         changed();
@@ -501,7 +511,7 @@
     if (L.float) raise(id);
     let on = false, drop = null;
     const box = tiles.getBoundingClientRect();
-    const mv = (ev) => {
+    const mv = perFrame((ev) => {
       const dx = ev.clientX - x0, dy = ev.clientY - y0;
       if (!on) {
         if (Math.hypot(dx, dy) < 5) return;
@@ -515,9 +525,10 @@
       drop = dropAt(ev.clientX - box.left, ev.clientY - box.top, id);
       paintHint(drop);
       Object.assign(ghost.style, { left: `${ev.clientX + 14}px`, top: `${ev.clientY + 12}px` });
-    };
+    });
     const end = (keep) => {
       document.removeEventListener("pointermove", mv);
+      mv.flush();
       document.removeEventListener("pointerup", upH);
       document.removeEventListener("pointercancel", cancelH);
       document.removeEventListener("keydown", keyH, true);
@@ -581,15 +592,15 @@
     el.setPointerCapture(e.pointerId);
     document.body.classList.add("dragging");
     const minW = MINW[id] || 140, minH = folded(id) ? headH(id) : 80;
-    const mv = (ev) => {
+    const mv = perFrame((ev) => {
       const dx = ev.clientX - x0, dy = ev.clientY - y0, r = { ...r0 };
       if (dir.includes("e")) r.w = Math.max(minW, r0.w + dx);
       if (dir.includes("s")) r.h = Math.max(minH, r0.h + dy);
       if (dir.includes("w")) { r.w = Math.max(minW, r0.w - dx); r.x = r0.x + r0.w - r.w; }
       if (dir.includes("n")) { r.h = Math.max(minH, r0.h - dy); r.y = r0.y + r0.h - r.h; }
       floatTo(id, r, "size", dir);
-    };
-    const up = () => { el.removeEventListener("pointermove", mv); document.body.classList.remove("dragging"); save(); };
+    });
+    const up = () => { el.removeEventListener("pointermove", mv); mv.flush(); document.body.classList.remove("dragging"); save(); };
     el.addEventListener("pointermove", mv);
     el.addEventListener("pointerup", up, { once: true });
     el.addEventListener("pointercancel", up, { once: true });
@@ -1238,6 +1249,7 @@
     || !!document.querySelector(".panel.max") || document.body.classList.contains("zen")
     || !$("#drop").hidden || !$("#closed").hidden // the whole-page "drop files" and "closed" screens
     || document.body.classList.contains("moving") // a panel is being dragged: show where it can go
+    || document.body.classList.contains("dragging") // a size is being changed: the program follows once, on let go
     || $("#appview").hasAttribute("data-covered"); // free-floating: a panel lies over the program
 
   let slotKey = "", slotRaf = 0;

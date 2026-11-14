@@ -131,3 +131,12 @@
 @media (prefers-reduced-motion: reduce) {
   .msg, .dlg[open] { animation: none; }
 }
+
+/* Smoothness: older messages that are scrolled out of view are not laid out or painted (a long chat
+   scrolls and types as fast as a short one). The newest few are always drawn in full, so "scroll to
+   the newest" lands exactly at the bottom. The clip margin keeps the cards' shadows whole. */
+#thread > .msg:not(.live):nth-last-child(n+6) { content-visibility: auto; contain-intrinsic-size: auto 120px; overflow-clip-margin: 16px; }
+.msg.old { animation: none; } /* put back when a conversation opens: no fade-in for each */
+.md-part { display: contents; } /* the live answer is built in two parts (finished + still arriving) */
+.md > .md-part:first-child > :first-child { margin-top: 0; }
+.md > .md-part:last-child > :last-child { margin-bottom: 0; }

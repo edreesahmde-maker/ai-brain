@@ -73,6 +73,7 @@ export const DEFAULT_SETTINGS = {
   bgDim: 70,              // how dark the overlay on a custom background is (0-95)
   brainModel: "opus",     // auto | fable | opus | sonnet | haiku
   effort: "auto",         // auto | low | medium | high
+  memoryLimit: 100,       // k tokens: past this Claude Code sums the conversation up (0 = never)
   geminiModel: "auto",    // auto | a model id from "agy models"
   chatgptEnabled: false,
   flowBrain: true,        // the brain may use the Google Flow window (open in AI Brain) to make videos
@@ -109,6 +110,7 @@ const RULES = {
   bgDim: (v) => Number.isInteger(v) && v >= 0 && v <= 95,
   brainModel: (v) => ["auto", "fable", "opus", "sonnet", "haiku"].includes(v),
   effort: (v) => ["auto", "low", "medium", "high"].includes(v),
+  memoryLimit: (v) => [0, 60, 100, 150].includes(v),
   geminiModel: (v) => typeof v === "string" && /^[\w.\-]{1,60}$/.test(v),
   chatgptEnabled: (v) => typeof v === "boolean",
   flowBrain: (v) => typeof v === "boolean",
@@ -230,19 +232,36 @@ export async function askChatGPT(prompt, opts) {
     throw e;
   }
 }
+let codexSignedInAt = 0;
+// AI Brain only asks ChatGPT questions, so its Codex runs leave out the plugins switched on in
+// ~/.codex/config.toml (browser, computer use, documents...) and the "notify" program run after
+// each turn. Starting those took about 4 of the ~11 seconds of even a one-word answer. Only for
+// AI Brain's runs: the config file itself is not changed.
+function codexLean(home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex")) {
+  const out = ["-c", "notify=[]"];
+  let toml = "";
+  try { toml = fs.readFileSync(path.join(home, "config.toml"), "utf8"); } catch { return out; }
+  for (const m of toml.matchAll(/^\s*\[plugins\.("[^"\r\n]+"|[\w-]+)\]\s*$/gm)) out.push("-c", `plugins.${m[1]}.enabled=false`);
+  return out;
+}
 async function askChatGPTNow(prompt, { newConversation = false, imagePaths = [], model, signal } = {}) {
   if (FAKE_HELPERS) return { ...(await fakeHelper("ChatGPT", prompt, signal)), usage: { in: 900, cached: 400, out: 60 } };
   const state = loadState();
   const outFile = path.join(os.tmpdir(), `ai-brain-codex-${process.pid}-${Date.now()}.txt`);
-  const common = ["--json", "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-o", outFile];
+  const common = ["--json", "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', ...codexLean(), "-o", outFile];
   if (model) common.push("-m", model);
   for (const img of imagePaths) common.push("-i", img);
 
-  // Fail fast (instead of ~70s of reconnect retries) when not signed in.
-  const st = await runNode(CODEX_JS, ["login", "status"], { timeoutMs: 30_000, signal });
-  if (st.aborted) throw stopped();
-  if (/not logged in/i.test(st.stdout + st.stderr)) {
-    throw new Error('ChatGPT is not signed in. Sign in with "codex login" (or press Sign in in the AI Brain app).');
+  // Fail fast (instead of ~70s of reconnect retries) when not signed in. Checked at most every
+  // 10 minutes (each check starts Codex once more); a failed call clears it so the next one checks.
+  if (Date.now() - codexSignedInAt > 10 * 60_000) {
+    const st = await runNode(CODEX_JS, ["login", "status"], { timeoutMs: 30_000, signal });
+    if (st.aborted) throw stopped();
+    if (/not logged in/i.test(st.stdout + st.stderr)) {
+      codexSignedInAt = 0;
+      throw new Error('ChatGPT is not signed in. Sign in with "codex login" (or press Sign in in the AI Brain app).');
+    }
+    codexSignedInAt = Date.now();
   }
 
   const resume = !newConversation && state.chatgptThread;
@@ -273,6 +292,7 @@ async function askChatGPTNow(prompt, { newConversation = false, imagePaths = [],
   try { lastMsg = fs.readFileSync(outFile, "utf8").trim() || lastMsg; fs.unlinkSync(outFile); } catch {}
 
   if (!lastMsg) {
+    codexSignedInAt = 0; // check the sign-in again next time
     let why = errors.join("\n") || r.stderr.trim().split(/\r?\n/).slice(-8).join("\n") || `exit code ${r.code}`;
     if (/log ?in|auth|401|unauthori/i.test(why)) why = `Not signed in to ChatGPT. Run "codex login" (or press Sign in in the app).\n${why}`;
     throw new Error(`ChatGPT (Codex CLI) gave no reply.\n${why}`);

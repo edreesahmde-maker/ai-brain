@@ -53,6 +53,8 @@ public static class AD {
   [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int a, out RECT r, int size);
   [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int a, out int v, int size);
   [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr mod, EventProc f, uint pid, uint tid, uint flags);
+  [DllImport("user32.dll")] static extern bool UnhookWinEvent(IntPtr hook);
+  [DllImport("user32.dll")] static extern bool PostThreadMessage(uint tid, uint msg, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] static extern int GetMessage(out MSG m, IntPtr h, uint a, uint b);
   [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG m);
   [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG m);
@@ -256,14 +258,38 @@ public static class AD {
     }
   }
 
+  // "Destroyed" and "location changed" fire for every window, menu, caret and mouse pointer on the
+  // PC (thousands a second while anything moves). Listen to them only from AI Brain's and the
+  // program's processes, so the events that matter are not stuck in a queue behind the others.
+  const uint WM_REHOOK = 0x8000 + 1; // WM_APP + 1
+  static uint hooksThread = 0, hookedBrainPid = 0, hookedAppPid = 0;
+  static readonly System.Collections.Generic.List<IntPtr> pidHooks = new System.Collections.Generic.List<IntPtr>();
+  static void Rehook() { // on the hooks thread only
+    uint bp, ap = 0;
+    lock (sync) { bp = brainPid; if (app != IntPtr.Zero) GetWindowThreadProcessId(app, out ap); }
+    if (bp == hookedBrainPid && ap == hookedAppPid && pidHooks.Count > 0) return;
+    foreach (IntPtr hk in pidHooks) UnhookWinEvent(hk);
+    pidHooks.Clear();
+    hookedBrainPid = bp; hookedAppPid = ap;
+    foreach (uint pid in new uint[] { bp, ap == bp ? 0 : ap }) {
+      if (pid == 0) continue;
+      pidHooks.Add(SetWinEventHook(0x8001, 0x8001, IntPtr.Zero, keep, pid, 0, 0)); // destroyed
+      pidHooks.Add(SetWinEventHook(0x800B, 0x800B, IntPtr.Zero, keep, pid, 0, 0)); // location changed
+    }
+  }
+  static void AskRehook() { if (hooksThread != 0) PostThreadMessage(hooksThread, WM_REHOOK, IntPtr.Zero, IntPtr.Zero); }
+
   static void Hooks() {
     SetThreadDpiAwarenessContext(new IntPtr(-4));
     keep = OnEvent;
     SetWinEventHook(0x0003, 0x0017, IntPtr.Zero, keep, 0, 0, 0);   // foreground, move/size, minimize
-    SetWinEventHook(0x8001, 0x8001, IntPtr.Zero, keep, 0, 0, 0);   // destroyed
-    SetWinEventHook(0x800B, 0x800B, IntPtr.Zero, keep, 0, 0, 0);   // location changed
+    hooksThread = GetCurrentThreadId();
+    Rehook();
     MSG m;
-    while (GetMessage(out m, IntPtr.Zero, 0, 0) > 0) { TranslateMessage(ref m); DispatchMessage(ref m); }
+    while (GetMessage(out m, IntPtr.Zero, 0, 0) > 0) {
+      if (m.hwnd == IntPtr.Zero && m.message == WM_REHOOK) { Rehook(); continue; }
+      TranslateMessage(ref m); DispatchMessage(ref m);
+    }
   }
 
   static bool Front(IntPtr h) {
@@ -288,6 +314,7 @@ public static class AD {
       if (cmd == "brain") {
         brain = new IntPtr(long.Parse(a[2]));
         GetWindowThreadProcessId(brain, out brainPid);
+        AskRehook();
         return "{\"ok\":" + (IsWindow(brain) ? "true" : "false") + "}";
       }
       if (cmd == "dock") {
@@ -304,6 +331,7 @@ public static class AD {
         if (app != h) { before = p; haveBefore = true; }
         app = h; snaps = 0; userMoving = false; downByUs = false;
         uint pid; GetWindowThreadProcessId(h, out pid);
+        AskRehook();
         string pl = "{\"show\":" + p.showCmd + ",\"l\":" + p.normal.L + ",\"t\":" + p.normal.T + ",\"r\":" + p.normal.R + ",\"b\":" + p.normal.B + "}";
         if (hasSlot) Place();
         return "{\"ok\":true,\"hwnd\":" + (long)h + ",\"pid\":" + pid + ",\"title\":\"" + Esc(Title(h)) + "\",\"exe\":\"" + Esc(ExePath(pid)) + "\",\"before\":" + pl + "}";
