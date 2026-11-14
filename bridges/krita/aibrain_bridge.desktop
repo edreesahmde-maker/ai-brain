@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=aibrain_bridge
+X-Python-2-Compatible=false
+Name=AI Brain bridge
+Comment=Lets the AI Brain app run Python in Krita, only when AI Brain opened Krita

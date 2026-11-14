@@ -17,6 +17,8 @@
 //   scroll <hwnd> <pid> <x> <y> <notches, + = up> <horizontal 0|1> <expX> <expY>
 //   type   <hwnd> <pid> <text as base64 UTF-8> <expX> <expY>
 //   key    <hwnd> <pid> <combo, e.g. ctrl+s> <times> <expX> <expY>
+//   act    <hwnd> <pid> <n> <kind> <name as base64> <press|set|toggle|select|expand|collapse|show|focus> [value as base64]
+//          does it through UI Automation: no mouse, no keyboard, no need for the window to be in front
 // expX/expY = where the brain left the mouse last time, or -99999 to skip that check.
 using System; using System.Collections.Generic; using System.Drawing; using System.Drawing.Drawing2D; using System.Drawing.Imaging;
 using System.Runtime.InteropServices; using System.Text; using System.Threading; using System.Windows.Automation;
@@ -267,7 +269,7 @@ public static class AC {
     string n = t.ProgrammaticName; int i = n.LastIndexOf('.'); return (i >= 0 ? n.Substring(i + 1) : n).ToLowerInvariant();
   }
 
-  class Item { public string kind, name, value; public bool on, pw; public System.Windows.Rect r; }
+  class Item { public string kind, name, value; public bool on, pw; public System.Windows.Rect r; public AutomationElement el; }
   class Node { public AutomationElement el; public int depth; public System.Windows.Rect clip; }
   // Containers that scroll: what lies outside them cannot be seen.
   static readonly HashSet<ControlType> Clips = new HashSet<ControlType> { ControlType.List, ControlType.Tree, ControlType.DataGrid, ControlType.Table, ControlType.Document };
@@ -305,7 +307,7 @@ public static class AC {
               string name = (c.Name ?? "").Trim();
               bool invoke = false; try { invoke = (bool)el.GetCachedPropertyValue(AutomationElement.IsInvokePatternAvailableProperty); } catch { }
               if (Wanted.Contains(t) || (name != "" && (invoke || (t == ControlType.Text && name.Length <= 120)))) {
-                var it = new Item { kind = Kind(t), name = name, on = c.IsEnabled, r = vis };
+                var it = new Item { kind = Kind(t), name = name, on = c.IsEnabled, r = vis, el = el };
                 try { it.pw = c.IsPassword; } catch { }
                 if (!it.pw && (t == ControlType.Edit || t == ControlType.ComboBox || t == ControlType.Document || t == ControlType.Slider || t == ControlType.Spinner)) {
                   try { object v = el.GetCachedPropertyValue(ValuePattern.ValueProperty); it.value = v as string; } catch { }
@@ -328,27 +330,112 @@ public static class AC {
   }
   static string walkError = "";
 
+  // The part of the screen a look covers: the main window plus any dialog or menu of the program that
+  // sticks out of it. Empty when it is off the screen.
+  static Rectangle LookArea(IntPtr h, List<IntPtr> wins, out RECT f, StringBuilder pops) {
+    f = Frame(h);
+    int L = f.L, T = f.T, R = f.R, B = f.B;
+    foreach (IntPtr w in wins) {
+      if (w == h) continue;
+      RECT r = Frame(w);
+      L = Math.Min(L, r.L); T = Math.Min(T, r.T); R = Math.Max(R, r.R); B = Math.Max(B, r.B);
+      if (pops != null) {
+        if (pops.Length > 0) pops.Append(',');
+        pops.Append("{\"title\":\"" + Esc(Title(w)) + "\",\"x\":" + r.L + ",\"y\":" + r.T + ",\"w\":" + (r.R - r.L) + ",\"h\":" + (r.B - r.T) + "}");
+      }
+    }
+    int vx = GetSystemMetrics(76), vy = GetSystemMetrics(77), vw = GetSystemMetrics(78), vh = GetSystemMetrics(79);
+    L = Math.Max(L, vx); T = Math.Max(T, vy); R = Math.Min(R, vx + vw); B = Math.Min(B, vy + vh);
+    return R - L < 8 || B - T < 8 ? Rectangle.Empty : new Rectangle(L, T, R - L, B - T);
+  }
+  // The items the brain is shown, in the order it numbers them (1, 2, ...): what is at least 2 pixels inside the area.
+  static List<Item> Shown(List<Item> got, Rectangle area) {
+    var list = new List<Item>();
+    foreach (var it in got) {
+      int x = (int)Math.Max(area.Left, it.r.Left), y = (int)Math.Max(area.Top, it.r.Top);
+      int x2 = (int)Math.Min(area.Right, it.r.Right), y2 = (int)Math.Min(area.Bottom, it.r.Bottom);
+      if (x2 - x >= 2 && y2 - y >= 2) list.Add(it);
+    }
+    return list;
+  }
+  static string Short(string name) { return name.Length > 120 ? name.Substring(0, 120) + "..." : name; }
+
+  // Background controls: does something to item n of the last look through UI Automation (what screen
+  // readers use) - press, type into, tick, pick, open - without the mouse and without taking the keyboard.
+  static string Act(IntPtr h, uint pid, string[] a) {
+    if (!IsWindow(h) || PidOf(h) != pid) return Fail("gone");
+    int n = int.Parse(a[3]); string kind = a[4]; string name = Encoding.UTF8.GetString(Convert.FromBase64String(a[5]));
+    string action = a[6]; string value = a.Length > 7 ? Encoding.UTF8.GetString(Convert.FromBase64String(a[7])) : "";
+    var wins = OwnWindows(h, pid);
+    RECT f;
+    var area = LookArea(h, wins, out f, null);
+    if (area.IsEmpty) return Fail("off-screen");
+    var items = new List<Item>(); object gate = new object();
+    var th = new Thread(() => Walk(wins, area, items, gate)); th.IsBackground = true; th.Start();
+    th.Join(6000);
+    List<Item> shown; lock (gate) shown = Shown(new List<Item>(items), area);
+    // The same thing as in the look, or (when the screen changed) the one thing with that kind and name.
+    Item it = n >= 1 && n <= shown.Count && shown[n - 1].kind == kind && Short(shown[n - 1].name) == name ? shown[n - 1] : null;
+    if (it == null) {
+      var same = shown.FindAll(x => x.kind == kind && Short(x.name) == name);
+      if (same.Count == 1) it = same[0];
+      else return Fail(same.Count == 0 ? "changed" : "ambiguous");
+    }
+    if (it.pw && action == "set") return Fail("password");
+    if (!it.on) return Fail("disabled");
+    var el = it.el;
+    object p;
+    try {
+      if (action == "press") {
+        if (el.TryGetCurrentPattern(InvokePattern.Pattern, out p)) { ((InvokePattern)p).Invoke(); return Done("pressed"); }
+        if (el.TryGetCurrentPattern(TogglePattern.Pattern, out p)) { ((TogglePattern)p).Toggle(); return Done("toggled"); }
+        if (el.TryGetCurrentPattern(SelectionItemPattern.Pattern, out p)) { ((SelectionItemPattern)p).Select(); return Done("selected"); }
+        if (el.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out p)) {
+          var ec = (ExpandCollapsePattern)p;
+          if (ec.Current.ExpandCollapseState == ExpandCollapseState.Expanded) { ec.Collapse(); return Done("collapsed"); }
+          ec.Expand(); return Done("expanded");
+        }
+        return Fail("cannot-press");
+      }
+      if (action == "set") {
+        if (el.TryGetCurrentPattern(ValuePattern.Pattern, out p)) {
+          var v = (ValuePattern)p;
+          if (v.Current.IsReadOnly) return Fail("read-only");
+          v.SetValue(value); return Done("set");
+        }
+        if (el.TryGetCurrentPattern(RangeValuePattern.Pattern, out p)) {
+          double d;
+          if (!double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out d)) return Fail("not-a-number");
+          ((RangeValuePattern)p).SetValue(d); return Done("set");
+        }
+        return Fail("cannot-set");
+      }
+      if (action == "toggle") { if (el.TryGetCurrentPattern(TogglePattern.Pattern, out p)) { ((TogglePattern)p).Toggle(); return Done("toggled"); } return Fail("cannot-toggle"); }
+      if (action == "select") { if (el.TryGetCurrentPattern(SelectionItemPattern.Pattern, out p)) { ((SelectionItemPattern)p).Select(); return Done("selected"); } return Fail("cannot-select"); }
+      if (action == "expand" || action == "collapse") {
+        if (!el.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out p)) return Fail("cannot-expand");
+        if (action == "expand") ((ExpandCollapsePattern)p).Expand(); else ((ExpandCollapsePattern)p).Collapse();
+        return Done(action == "expand" ? "expanded" : "collapsed");
+      }
+      if (action == "show") { if (el.TryGetCurrentPattern(ScrollItemPattern.Pattern, out p)) { ((ScrollItemPattern)p).ScrollIntoView(); return Done("scrolled into view"); } return Fail("cannot-show"); }
+      if (action == "focus") { el.SetFocus(); return Done("focused"); }
+      return Fail("unknown-action");
+    } catch (ElementNotEnabledException) { return Fail("disabled"); }
+    catch (ElementNotAvailableException) { return Fail("changed"); }
+    catch (Exception e) { return Fail("failed: " + e.Message); }
+  }
+  static string Done(string what) { return "{\"ok\":true,\"done\":\"" + what + "\"," + CursorJson() + "}"; }
+
   static string Look(IntPtr h, uint pid, string[] a) {
     if (!IsWindow(h) || PidOf(h) != pid) return Fail("gone");
     string png = a[3]; int maxSide = Math.Max(400, Math.Min(2400, int.Parse(a[4])));
     bool front = Front(h, pid);
     Thread.Sleep(120); // let it draw after coming to the front
     var wins = OwnWindows(h, pid);
-    // The picture covers the main window plus any dialog or menu of the program that sticks out of it.
-    RECT f = Frame(h);
-    int L = f.L, T = f.T, R = f.R, B = f.B;
     var pops = new StringBuilder();
-    foreach (IntPtr w in wins) {
-      if (w == h) continue;
-      RECT r = Frame(w);
-      L = Math.Min(L, r.L); T = Math.Min(T, r.T); R = Math.Max(R, r.R); B = Math.Max(B, r.B);
-      if (pops.Length > 0) pops.Append(',');
-      pops.Append("{\"title\":\"" + Esc(Title(w)) + "\",\"x\":" + r.L + ",\"y\":" + r.T + ",\"w\":" + (r.R - r.L) + ",\"h\":" + (r.B - r.T) + "}");
-    }
-    int vx = GetSystemMetrics(76), vy = GetSystemMetrics(77), vw = GetSystemMetrics(78), vh = GetSystemMetrics(79);
-    L = Math.Max(L, vx); T = Math.Max(T, vy); R = Math.Min(R, vx + vw); B = Math.Min(B, vy + vh);
-    if (R - L < 8 || B - T < 8) return Fail("off-screen");
-    var area = new Rectangle(L, T, R - L, B - T);
+    RECT f;
+    var area = LookArea(h, wins, out f, pops);
+    if (area.IsEmpty) return Fail("off-screen");
     double scale = Math.Min(1.0, (double)maxSide / Math.Max(area.Width, area.Height));
     int iw = Math.Max(1, (int)Math.Round(area.Width * scale)), ih = Math.Max(1, (int)Math.Round(area.Height * scale));
 
@@ -366,7 +453,7 @@ public static class AC {
       } else shot.Save(png, ImageFormat.Png);
     }
     bool complete = th.Join(4000);
-    List<Item> got; lock (gate) got = new List<Item>(items);
+    List<Item> got; lock (gate) got = Shown(new List<Item>(items), area);
 
     var sb = new StringBuilder();
     sb.Append("{\"ok\":true,\"front\":" + (front ? "true" : "false") + ",\"title\":\"" + Esc(Title(h)) + "\"");
@@ -379,9 +466,8 @@ public static class AC {
       // screen pixels, clipped to the picture
       int x = (int)Math.Max(area.Left, it.r.Left), y = (int)Math.Max(area.Top, it.r.Top);
       int x2 = (int)Math.Min(area.Right, it.r.Right), y2 = (int)Math.Min(area.Bottom, it.r.Bottom);
-      if (x2 - x < 2 || y2 - y < 2) continue;
-      if (i > 0 && sb[sb.Length - 1] != '[') sb.Append(',');
-      sb.Append("{\"kind\":\"" + it.kind + "\",\"name\":\"" + Esc(it.name.Length > 120 ? it.name.Substring(0, 120) + "..." : it.name) + "\"");
+      if (i > 0) sb.Append(',');
+      sb.Append("{\"kind\":\"" + it.kind + "\",\"name\":\"" + Esc(Short(it.name)) + "\"");
       if (it.pw) sb.Append(",\"password\":true");
       else if (it.value != null) sb.Append(",\"value\":\"" + Esc(it.value.Length > 200 ? it.value.Substring(0, 200) + "..." : it.value) + "\"");
       if (!it.on) sb.Append(",\"disabled\":true");
@@ -406,6 +492,7 @@ public static class AC {
           case "scroll": answer = Scroll(h, pid, a); break;
           case "type": answer = TypeText(h, pid, a); break;
           case "key": answer = Combo(h, pid, a); break;
+          case "act": answer = Act(h, pid, a); break;
           default: answer = Fail("unknown command"); break;
         }
       }

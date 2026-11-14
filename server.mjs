@@ -255,6 +255,63 @@ if (process.env.AI_BRAIN_APPS === "1" && APP_URL && CONTROL_KEY) {
       ...wait,
     },
   }, run("drag"));
+
+  // ----- no mouse: background controls and bridges -----
+  server.registerTool("app_act", {
+    title: "Use a control without the mouse",
+    description: "Press, fill in (set), tick (toggle), pick (select), open (expand) or close (collapse) a thing from the app_look list through Windows accessibility - without moving the mouse or using the keyboard. Prefer it to app_click whenever the thing is listed. Returns a new picture.",
+    inputSchema: {
+      target: z.number().int().min(1).describe("The number of the thing from the app_look list"),
+      action: z.enum(["press", "set", "toggle", "select", "expand", "collapse", "show", "focus"]).optional().describe("Default press. set = replace a text box's (or slider's) value with value; show = scroll it into view"),
+      value: z.string().max(20000).optional().describe("For set: the new text or number"),
+      ...wait,
+    },
+  }, run("act"));
+  const kindName = (r) => `${r.name} (${r.kind === "craft" ? (r.live ? "live bridge to the open window" : "headless bridge: works on files, not on the window") : `Python bridge, live in ${r.kind === "blender" ? "Blender" : "Krita"}`})`;
+  const asText = (r, text) => (r?.ok ? { content: [{ type: "text", text: text(r) }] } : { content: [{ type: "text", text: String(r?.why || "It did not work.") }], isError: true });
+  server.registerTool("app_commands", {
+    title: "The program's own commands",
+    description: "What the program in the middle can be told to do from the inside, with no mouse (its bridge). Craft apps list their commands (filter by a word; name = one command's full parameters). Blender and Krita answer that they take Python (app_python) and describe their open file.",
+    inputSchema: {
+      filter: z.string().max(200).optional().describe("Only commands whose name or description contains this"),
+      name: z.string().max(200).optional().describe("One command's exact name: its full description and parameters"),
+    },
+  }, async (a) => {
+    try {
+      const r = await step("bridge", a || {});
+      return asText(r, (x) => {
+        if (x.python) return `${kindName(x)}.\nIt takes Python: use app_python. ${x.kind === "blender" ? "bpy is ready." : "Krita.instance() is ready as `app`."}\nNow: ${JSON.stringify(x.about)}`;
+        if (x.tool) return `${kindName(x)}: ${x.tool.name}\n${x.tool.description}\n\nParameters (JSON schema):\n${JSON.stringify(x.tool.input, null, 2)}`;
+        const rows = x.tools.map((t) => `- ${t.name}(${t.params.map((p) => (t.required.includes(p) ? p : `${p}?`)).join(", ")}): ${t.description}`);
+        return `${kindName(x)}: ${x.total} commands${x.filter ? `, ${x.tools.length + x.more} matching "${x.filter}"` : ""}${x.more ? ` (first ${x.tools.length} shown; filter to see others)` : ""}. Use app_command to run one; app_commands with name shows one's full parameters.\n${rows.join("\n")}`;
+      });
+    } catch (e) { return fail(e); }
+  });
+  server.registerTool("app_command", {
+    title: "Run one of the program's commands",
+    description: "Run one of the program's own commands (from app_commands) through its bridge - no mouse. In a Craft app with a live bridge you see the change in the open window. The answer is the command's result (text, and pictures when it renders).",
+    inputSchema: {
+      command: z.string().min(1).max(200).describe("The command's name from app_commands"),
+      params: z.record(z.string(), z.any()).optional().describe("Its parameters, as app_commands describes them"),
+    },
+  }, async (a) => {
+    try {
+      const r = await step("bridge-call", { command: a.command, params: a.params || {} });
+      if (!r?.ok) return { content: [{ type: "text", text: String(r?.why || "It did not work.") }], isError: true };
+      const content = (r.content || []).map((x) => (x.type === "image" ? { type: "image", data: x.data, mimeType: x.mimeType || "image/png" } : { type: "text", text: String(x.text ?? "") }));
+      return { content: content.length ? content : [{ type: "text", text: "Done (no output)." }] };
+    } catch (e) { return fail(e); }
+  });
+  server.registerTool("app_python", {
+    title: "Run Python inside Blender or Krita",
+    description: "Run Python inside the live Blender (bpy) or Krita (Krita.instance() as `app`) in the middle of AI Brain - no mouse; you see the change in the program. Variables stay between calls. What you print comes back, and so does the value of a last expression. It is checked like a command (the user may have to allow it).",
+    inputSchema: { code: z.string().min(1).max(100000).describe("The Python code") },
+  }, async (a) => {
+    try {
+      const r = await step("python", { code: a.code });
+      return asText(r, (x) => `${kindName(x)}\n${x.output ? `Printed:\n${x.output}\n` : ""}${x.result != null ? `Result: ${x.result}` : x.output ? "" : "Done (nothing printed, no result)."}`);
+    } catch (e) { return fail(e); }
+  });
 }
 
 // Web inspector: tabs the user shared with the AI Brain extension in their own browser (signed in as

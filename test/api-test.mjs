@@ -720,6 +720,8 @@ async function appsTests() {
   const env = mcpEnv(), key = env.AI_BRAIN_CONTROL_KEY;
   ok(env.AI_BRAIN_APPS === "1" && /^[0-9a-f]{48}$/.test(key || ""), "a task gets the app tools switched on and a key of its own");
   ok(APP.every((n) => a.args.includes(`mcp__ai-brain__${n}`)) && /PROGRAMS \(tools app_open/.test(sys(a)) && /If the user moves the mouse, you stop/.test(sys(a)) && /Never type passwords/.test(sys(a)), "the brain is offered the seven app tools and told the rules");
+  ok(["app_act", "app_commands", "app_command"].every((n) => a.args.includes(`mcp__ai-brain__${n}`)) && !a.args.includes("mcp__ai-brain__app_python"), "the no-mouse tools are allowed too, but Python in a program is never pre-allowed (it is checked like a command)");
+  ok(/1\. BRIDGE/.test(sys(a)) && /2\. BACKGROUND CONTROLS/.test(sys(a)) && /3\. MOUSE AND KEYBOARD \(last resort/.test(sys(a)) && /HEADLESS bridge/.test(sys(a)), "the brain is told to prefer the bridge, then background controls, then the mouse");
   const ctl = (body, k = key, headers = H) => post("/api/apps/control", body, { ...headers, ...(k ? { "X-Brain-Key": k } : {}) });
   ok((await ctl({ cmd: "look" }, "")).status === 403 && (await ctl({ cmd: "look" }, "0".repeat(48))).status === 403, "without the task's key: refused");
   ok((await ctl({ cmd: "look" }, key, { "Content-Type": "application/json" })).status === 403, "other websites cannot (no AI Brain origin)");
@@ -789,6 +791,33 @@ async function appsTests() {
       await post("/api/apps/control/answer", { id: e4.id, result: { ok: false, why: "The user moved the mouse, so you stopped using the program." } });
       const res4 = await answer(4);
       ok(res4.isError && /moved the mouse/.test(res4.content[0].text), "a refusal reaches the brain as an error with the reason");
+
+      // Bridges and background controls (the window's answers are made up here; the real ones are in
+      // test/bridge-test.mjs and test/shell-test.mjs).
+      ok(["app_act", "app_commands", "app_command", "app_python"].every((n) => names.includes(n)), "the tool server also has app_act, app_commands, app_command and app_python");
+      const viaWindow = async (id, name, args, result) => {
+        const f0 = events.length;
+        rpc({ id, method: "tools/call", params: { name, arguments: args } });
+        const ev = await waitFor((e) => e.type === "app-control", 5000, f0);
+        await post("/api/apps/control/answer", { id: ev.id, result });
+        return { ev, res: await answer(id) };
+      };
+      let v = await viaWindow(5, "app_commands", { filter: "export" }, { ok: true, name: "VectorCraft", kind: "craft", live: true, total: 33, filter: "export", more: 0,
+        tools: [{ name: "export_file", description: "Export the document", params: ["path", "format"], required: ["path"] }] });
+      ok(v.ev.cmd === "bridge" && v.ev.args.filter === "export", "app_commands asks the window for the bridge's commands");
+      ok(/VectorCraft \(live bridge to the open window\): 33 commands, 1 matching "export"/.test(v.res.content[0].text) && /- export_file\(path, format\?\): Export the document/.test(v.res.content[0].text), "and lists them with their parameters", v.res.content[0].text);
+      v = await viaWindow(6, "app_command", { command: "export_file", params: { path: "C:\\x.svg" } }, { ok: true, name: "VectorCraft", kind: "craft", live: true,
+        content: [{ type: "text", text: "exported 1 file" }, { type: "image", data: png, mimeType: "image/png" }] });
+      ok(v.ev.cmd === "bridge-call" && v.ev.args.command === "export_file" && v.ev.args.params.path === "C:\\x.svg", "app_command sends the command and its parameters");
+      ok(v.res.content[0].text === "exported 1 file" && v.res.content[1].type === "image" && v.res.content[1].data === png, "its text and pictures reach the brain");
+      v = await viaWindow(7, "app_python", { code: "import bpy\nlen(bpy.data.objects)" }, { ok: true, name: "Blender", kind: "blender", live: true, output: "hi\n", result: "3" });
+      ok(v.ev.cmd === "python" && /bpy/.test(v.ev.args.code) && /Python bridge, live in Blender/.test(v.res.content[0].text) && /Printed:\nhi/.test(v.res.content[0].text) && /Result: 3/.test(v.res.content[0].text), "app_python runs code in the program and shows what it printed and returned", v.res.content[0].text);
+      v = await viaWindow(8, "app_commands", {}, { ok: true, name: "Krita", kind: "krita", live: true, python: true, about: { version: "5.3.4" } });
+      ok(/takes Python: use app_python/.test(v.res.content[0].text) && /Krita.instance\(\) is ready as `app`/.test(v.res.content[0].text), "for Blender or Krita, app_commands says to use Python");
+      v = await viaWindow(9, "app_act", { target: 2, action: "set", value: "hello" }, { ok: true, did: 'Set edit "Notes" (set to "hello"), without the mouse.', name: "Test", title: "Test", front: true, complete: true, image: { w: 10, h: 10, data: png, type: "image/png" }, popups: [], items: [] });
+      ok(v.ev.cmd === "act" && v.ev.args.target === 2 && v.ev.args.action === "set" && v.ev.args.value === "hello" && /without the mouse/.test(v.res.content[0].text), "app_act sends the action and shows what was done");
+      v = await viaWindow(10, "app_command", { command: "x" }, { ok: false, why: "Notepad has no bridge (only the Craft apps, Blender and Krita have one)." });
+      ok(v.res.isError && /has no bridge/.test(v.res.content[0].text), "a program without a bridge is explained");
     } catch (e) { failed++; console.log("  FAIL app tool server: " + e.message); }
     mcp.kill();
     const off = spawn(process.execPath, [path.join(ROOT, "server.mjs")], { env: { ...process.env, ...env, AI_BRAIN_APPS: "0", BRAIN_DATA_DIR: DATA }, stdio: ["pipe", "pipe", "ignore"] });
@@ -828,7 +857,22 @@ async function appsTests() {
   ok(t.slice.some((e) => e.type === "log" && e.text === "Program: look") && t.slice.some((e) => e.type === "log" && e.text === "Program: double-click #3") && t.slice.some((e) => e.type === "log" && e.text === 'Program: type "hello there"'), "the log shows each step in the program");
   ok(!t.slice.some((e) => e.type === "call"), "steps are not shown as helper calls");
   ok(t.fin && !t.fin.isError, "the task finishes normally");
-  await post("/api/settings", { appsBrain: false });
+
+  // Python inside Blender/Krita is asked about like a command, with the code shown.
+  const accessBefore = (await get("/api/settings")).body.access;
+  await post("/api/settings", { access: "ask" });
+  from = events.length;
+  await post("/api/task", { text: "Python please [hang]" });
+  await waitFor((e) => e.type === "stream" && e.text.length > 10, 8000, from);
+  const akey = mcpEnv().AI_BRAIN_APPROVE_KEY;
+  const askP = post("/api/approval/ask", { tool_name: "mcp__ai-brain__app_python", input: { code: "import bpy\nbpy.ops.wm.save_mainfile()" } }, { ...H, "X-Brain-Key": akey });
+  const aev = await waitFor((e) => e.type === "approval", 3000, from);
+  ok(aev?.kind === "command" && /run Python in the program in the middle/.test(aev.title) && /save_mainfile/.test(aev.detail) && /can do anything that program can/.test(aev.note), "Python in a program is shown to the user like a command before it runs", JSON.stringify(aev));
+  await post("/api/approval/answer", { id: aev.id, allow: false });
+  ok((await askP).body?.behavior === "deny", "and denied when the user says no");
+  await post("/api/stop");
+  await waitFor((e) => e.type === "busy" && e.value === false, 8000, from);
+  await post("/api/settings", { access: accessBefore, appsBrain: false });
 }
 
 // The web inspector's doors: only the paired extension gets in; the brain needs its task key.

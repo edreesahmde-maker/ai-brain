@@ -3,6 +3,35 @@
 Version 3.1.0. Start it with the "AI Brain" desktop shortcut, or `powershell -File launch.ps1`.
 Server on http://127.0.0.1:4777, desktop window = Electron (`shell/main.cjs`).
 On GitHub (private): https://github.com/edreesahmde-maker/ai-brain (branch master).
+The project lives at D:\Projects\ai-brain (moved from C:\Users\KUBE\Projects on 2026-11-14; the desktop
+shortcut and ~/.claude.json's ai-brain MCP entry point here). Programs: D:\Apps (Blender, Krita, 14 Craft
+apps, portable); PhotoCraft, FilmCraft, AniCraft, ArtCraft Studio, Canva in %LOCALAPPDATA%\Programs.
+
+## Done on 2026-11-14: app BRIDGES - the brain works inside programs without the mouse
+- `shell/bridges.cjs` (no Electron; tested alone by `test/bridge-test.mjs`): `kindOf(target)` = craft |
+  blender | krita | ""; `prepare(target, argv)` gives how to start it with the bridge on; `Bridge` talks to it.
+  - Craft apps: started with `--control <free port>`; their own MCP server `<app>-cli mcp <connect flags>` is
+    spawned as a client (`CRAFT_LIVE` table: --connect host:port / --connect port / --attach / --bridge).
+    FilmCraft and PhotoCraft need a 64-hex token in env (FILMCRAFT_/PHOTOCRAFT_CONTROL_TOKEN, `CRAFT_TOKEN_ENV`).
+    LIVE (12): VectorCraft, CADCraft, LightCraft, WordCraft, DeckCraft, DesignCraft, GridCraft, SoundCraft,
+    FigCraft, FilmCraft, PhotoCraft (+ list grows as apps add it). HEADLESS (works on files, 5): AniCraft 0.2,
+    EffectCraft, MaterialCraft, TextureCraft, Craft Anything - `mcp` with no connect flags.
+    The control ports have NO authentication (per their docs) except Film/PhotoCraft: only on for apps AI
+    Brain started, loopback, random port.
+  - Blender: `blender.exe --python bridges/blender_bridge.py` (launcher swapped for blender.exe) + env
+    AIBRAIN_BRIDGE_PORT/TOKEN; JSON lines over TCP, code runs on Blender's main thread (bpy.app.timers).
+  - Krita: plugin `bridges/krita` copied to %APPDATA%\krita\pykrita, switched on with
+    `[python] enable_aibrain_bridge=true` in %LOCALAPPDATA%\kritarc; same env + protocol (QTcpServer).
+- main.cjs: openPin starts pinned programs through `bridges.prepare`; `appBridges` (pin id -> Bridge).
+  A program opened outside AI Brain has no bridge (the brain is told to ask the user to reopen it).
+  brainControl cmds: bridge (list/one command), bridge-call, python, act.
+- Background controls (`app-control.cs act`): UI Automation Invoke/Toggle/SelectionItem/ExpandCollapse/
+  Value/RangeValue/ScrollItem on item n of the last look (verified by kind+name) - no mouse, no keyboard,
+  no focus. Password boxes refused.
+- Brain tools: app_act, app_commands, app_command (pre-allowed with appsBrain) and app_python (NOT pre-allowed:
+  goes through the approve tool like a command; describe() shows the code). System prompt order:
+  1. bridge, 2. background controls, 3. mouse/keyboard.
+- NOT yet tried with the real Claude.
 
 ## Done on 2026-11-14: the brain can USE the program in the middle (mouse + keyboard)
 - Setting `appsBrain` (default OFF): Settings > The brain > "Let the brain use the program in the middle".
@@ -52,9 +81,11 @@ On GitHub (private): https://github.com/edreesahmde-maker/ai-brain (branch maste
 ## Tests
 - `node test/inspect-test.mjs` -> 43 passed, 0 failed (real extension in a throw-away Brave profile, local test
   page, real server, the brain's tool server: pairing, share, every web_ tool, refusals, unshare, key, new code)
-- `node test/api-test.mjs`    -> 277 passed, 0 failed (30 app control + 21 web inspector checks)
+- `node test/bridge-test.mjs` -> real Craft apps (all 17), Blender and Krita through their bridges (opens them)
+- `node test/api-test.mjs`    -> 290 passed, 0 failed (app control, bridges, web inspector)
 - `node test/ui-test.mjs`     -> 487 passed, 0 failed (about 6 minutes)
-- `node test/shell-test.mjs`  -> 62 passed, 0 failed (real desktop window against a test server; Google Flow
+- `node test/shell-test.mjs`  -> 74 passed, 0 failed (incl. background controls and GridCraft + Blender bridges through the window)
+  (earlier: 62 passed (real desktop window against a test server; Google Flow
   with a local test page in an empty browser profile, incl. switching to "open only to sign in" and back;
   System Information docking; the "older server" stubs; 27 new: the brain uses the test window - open, look,
   click, type, keys, scroll, double/right click, drag, covered spot, window moved, user takes over, and the whole

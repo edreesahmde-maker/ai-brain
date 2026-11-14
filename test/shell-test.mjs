@@ -56,6 +56,11 @@ for (let i = 0; ; i++) {
   if (i > 60) throw new Error("server did not start");
   await sleep(200);
 }
+// Programs with a bridge to try through the window, when they are installed.
+const firstExe = (dir, exe) => { try { for (const d of fs.readdirSync(dir)) { const p = path.join(dir, d, exe); if (fs.existsSync(p)) return p; } } catch { /* none */ } return ""; };
+const BRIDGE_EXES = [firstExe("D:\\Apps\\GridCraft", "gridcraft.exe") || firstExe(path.join(process.env.LOCALAPPDATA || "", "Programs", "ArtCraft"), "gridcraft.exe"),
+  ["D:\\Apps\\Blender\\blender-launcher.exe", "C:\\Program Files\\Blender Foundation\\Blender 5.3\\blender-launcher.exe"].find((p) => fs.existsSync(p)) || ""].filter(Boolean);
+
 // The brain uses a program: a small test window of our own (test/fixture-app.cs), built here.
 let FIXTURE_EXE = "";
 {
@@ -69,7 +74,9 @@ let FIXTURE_EXE = "";
 const env = { ...process.env, BRAIN_PORT: String(PORT), BRAIN_SHELL_DATA: SHELL_DATA, BRAIN_SHELL_TEST: OUT, BRAIN_SHELL_APPS: "1",
   // Google Flow is tested with a page of the test server and an empty browser profile: never Google, never your browser session.
   BRAIN_SHELL_FLOW_URL: `http://127.0.0.1:${PORT}/api/ping`,
-  ...(FIXTURE_EXE ? { BRAIN_SHELL_CONTROL_EXE: FIXTURE_EXE, BRAIN_SHELL_CONTROL_STATE: path.join(SHELL_DATA, "fixture-state.json"), BRAIN_SHELL_SERVER_DATA: DATA } : {}) };
+  ...(FIXTURE_EXE ? { BRAIN_SHELL_CONTROL_EXE: FIXTURE_EXE, BRAIN_SHELL_CONTROL_STATE: path.join(SHELL_DATA, "fixture-state.json"), BRAIN_SHELL_SERVER_DATA: DATA } : {}),
+  // Real bridges through the window: a live Craft app and Blender, when installed (BRAIN_SHELL_BRIDGE_EXES overrides).
+  BRAIN_SHELL_BRIDGE_EXES: process.env.BRAIN_SHELL_BRIDGE_EXES ?? BRIDGE_EXES.join(";") };
 delete env.ELECTRON_RUN_AS_NODE;
 const el = spawn(path.join(ROOT, "node_modules", "electron", "dist", "electron.exe"), [path.join(ROOT, "shell", "main.cjs")], { env, stdio: ["ignore", "pipe", "pipe"] });
 let log = "";
@@ -141,7 +148,29 @@ else {
   ok(/app_look first/.test(u?.early || "") && u.nextTask === true, "a new task starts fresh: it looks first and can use the program again", JSON.stringify(u));
   ok(rl?.key === 48 && rl.look && rl.png && rl.listed, "the whole way from the brain's tools: the server asks the page, the window looks", JSON.stringify(rl));
   ok(rl?.click === true && /Press me/.test(rl.did || "") && rl.clicks?.[1] === rl.clicks?.[0] + 1, "and a click from the brain's tools lands in the program", JSON.stringify(rl));
+  const ac = line("CONTROL ACT");
+  ok(/^Pressed button "Press me", without the mouse/.test(ac?.a1 || "") && ac.clicks?.[1] === ac.clicks?.[0] + 1, "background controls press a button", JSON.stringify(ac));
+  ok(/^Set edit "Notes"/.test(ac?.a2 || "") && ac.text === "set without keys", "fill in a text box", JSON.stringify({ a2: ac?.a2, text: ac?.text }));
+  ok(/^Toggled checkbox "Remember"/.test(ac?.a3 || "") && ac.checked?.[1] === !ac.checked?.[0] && ac.png, "and tick a check box, each with a new picture");
+  ok(ac?.keys?.[0] === ac?.keys?.[1] && ac?.mouse?.[0]?.x === ac?.mouse?.[1]?.x && ac?.mouse?.[0]?.y === ac?.mouse?.[1]?.y, "without one key press and without moving the mouse", JSON.stringify({ keys: ac?.keys, mouse: ac?.mouse }));
+  ok(/password box/.test(ac?.a4 || "") && /no number 9999/.test(ac?.a5 || ""), "a password box is never filled in; unknown numbers are refused");
+  ok(/has no bridge \(only the Craft apps, Blender and Krita/.test(ac?.nb || ""), "a program without a bridge is told so", ac?.nb);
   ok(dn?.closed && dn.docked === false, "the test window was closed and nothing is left in the middle", JSON.stringify(dn));
+}
+
+console.log("bridges through the window");
+for (const exe of BRIDGE_EXES) {
+  const name = path.basename(exe, ".exe").replace(/-launcher$/i, "").toUpperCase();
+  const b = line(`BRIDGE ${name}`);
+  if (b?.skip) { console.log(`  skip ${name}: ${b.skip}`); continue; }
+  ok(b?.open === true && b.look === true, `${name}: the brain opens it from the Apps panel and sees it`, JSON.stringify(b));
+  if (name === "BLENDER") {
+    ok(b?.kind === "blender" && b.live && /^5\./.test(b.version || ""), "BLENDER: its Python bridge is on", JSON.stringify(b));
+    ok(b?.call?.ok && /Suzanne/.test(b.call.result || ""), "BLENDER: Python runs in it through the window (adds a monkey)", JSON.stringify(b?.call));
+  } else {
+    ok(b?.kind === "craft" && b.live === true && b.tools > 0, `${name}: its live bridge lists ${b?.tools} commands`, JSON.stringify(b));
+    ok(b?.call?.ok, `${name}: one of its commands runs through the window (${b?.call?.cmd})`, JSON.stringify(b?.call));
+  }
 }
 
 console.log("program in the middle");

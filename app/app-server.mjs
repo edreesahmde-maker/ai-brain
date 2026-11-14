@@ -89,7 +89,9 @@ function folderProblem(f) {
 const usableFolders = (s) => [...new Set(s.folders.map((f) => path.resolve(f)))].filter((f) => !folderProblem(f));
 const HELPER_TOOLS = new Set(["ask_gemini", "ask_chatgpt", "ask_both", "generate_image", "generate_video", "flow_make_video", "flow_save_videos"]);
 const FLOW_TOOLS = ["flow_make_video", "flow_look", "flow_click", "flow_type", "flow_wait", "flow_save_videos"];
-const APP_TOOLS = ["app_open", "app_look", "app_click", "app_type", "app_key", "app_scroll", "app_drag"];
+// app_python is left out on purpose: running Python inside Blender or Krita can do anything a program
+// can, so it goes through the approve tool like a command (asks in "ask", runs in "auto", refused in "read").
+const APP_TOOLS = ["app_open", "app_look", "app_click", "app_type", "app_key", "app_scroll", "app_drag", "app_act", "app_commands", "app_command"];
 const WEB_TOOLS = ["web_tabs", "web_html", "web_eval", "web_network", "web_response", "web_console", "web_cookies", "web_styles", "web_screenshot", "web_go"];
 const ASK_RULES = JSON.stringify({ permissions: { ask: ["PowerShell", "Bash", "Write", "Edit", "NotebookEdit"] } });
 const brainTools = (s) =>
@@ -106,9 +108,13 @@ function systemPrompt(s) {
   else if (!s.flowBrain) lines.push("- Video is not connected: if the user asks for a video, tell them to add their Google API key in Settings > Video (or to open Google Flow from the Apps panel).");
   if (s.flowBrain) lines.push(`- GOOGLE FLOW (tools flow_make_video, flow_look, flow_click, flow_type, flow_wait, flow_save_videos) - Google's video maker (Veo 3.1) in a window inside AI Brain, using the user's own Google plan (no API key; it uses their Flow credits). ${googleKeyState().connected ? "Prefer generate_video; use Flow when the user asks for Flow or when generate_video fails." : "Use it when the user asks for a video."} Start with flow_make_video (one call per video). If it reports a problem, use flow_look to read the page, then flow_click / flow_type / flow_wait / flow_save_videos like a person would. If Flow asks the user to sign in or to accept something, stop and tell the user. Make only as many videos as the user asked for. You cannot watch the saved video: say what you asked Flow for, never describe sounds or details as if you had seen them.`);
   if (s.appsBrain) lines.push([
-    "- PROGRAMS (tools app_open, app_look, app_click, app_type, app_key, app_scroll, app_drag) - you can USE the program shown in the middle of AI Brain (Blender, a text editor, a browser, a game engine...) with the real mouse and keyboard, like a person sitting at the computer.",
-    "  app_look gives a picture of the program and a numbered list of the buttons, menus, boxes and other things on it (positions are picture pixels). app_open opens one of the programs the user added to the Apps panel. Every click, typing, key, scroll or drag shows you a new picture, so check that each step did what you expected before the next one.",
-    "  Click by the number from the list when the thing is listed; otherwise use x and y in the picture. Some programs (Blender, games, 3D and drawing tools) draw everything themselves and list almost nothing: use the picture and their keyboard shortcuts then.",
+    "- PROGRAMS (tools app_open, app_look, app_commands, app_command, app_python, app_act, app_click, app_type, app_key, app_scroll, app_drag) - you can USE the program shown in the middle of AI Brain (Blender, Krita, the Craft apps, an editor, a browser...).",
+    "  app_open opens one of the programs the user added to the Apps panel; app_look gives a picture of the program and a numbered list of its buttons, menus and boxes (positions are picture pixels).",
+    "  Use the best way the program offers, in this order:",
+    "  1. BRIDGE (no mouse, works inside the program; best): the Craft apps (PhotoCraft, VectorCraft, FilmCraft, LightCraft, DesignCraft, FigCraft, DeckCraft, WordCraft, GridCraft, CADCraft, SoundCraft...) take commands - app_commands lists them (filter by a word; name gives one command's full parameters) and app_command runs one; their results can include pictures. AniCraft, EffectCraft, MaterialCraft, TextureCraft and Craft Anything have a HEADLESS bridge: it works on files, not on the window - make or edit a file, save it, then open it in the app. Blender and Krita run Python inside the live program with app_python (bpy in Blender; Krita.instance() as `app` in Krita); the value of a last expression comes back, and so does what you print. app_python is checked like a command: the user may have to allow it, and it is refused while File and command access is off in Settings (then say so, and use the other ways). The bridge only exists when AI Brain opened the program (app_open or the Apps panel); if it says the program was opened outside AI Brain, ask the user to close it and open it again with app_open.",
+    "  2. BACKGROUND CONTROLS (no mouse): app_act presses, fills in (set), ticks, picks, opens or shows a thing from the app_look list through Windows accessibility - for normal programs (editors, settings, Office, many web apps). Prefer it to clicking whenever the thing is listed.",
+    "  3. MOUSE AND KEYBOARD (last resort; the user sees the pointer move): app_click, app_type, app_key, app_scroll, app_drag. Click by the number from the list when the thing is listed, otherwise by x and y in the picture. Programs that draw everything themselves list almost nothing: use the picture and their keyboard shortcuts then.",
+    "  Every step returns what happened (and most return a new picture): check it before the next step.",
     "  Rules: use the program only for what the user asked. Never type passwords or sign in for the user, never buy, pay, send messages or post anything, and never delete, close without saving or overwrite the user's work unless the user asked for exactly that; when the program asks about any of those, stop and ask the user. If the user moves the mouse, you stop: the user is taking over; say what you did and what is left. Work in clear steps and tell the user briefly what you did in the program.",
   ].join("\n"));
   if (s.inspectBrain) lines.push([
@@ -425,6 +431,7 @@ function forbidden(input) {
 function describe(tool, input = {}) {
   const clip = (v, n) => { const s = String(v ?? ""); return s.length > n ? `${s.slice(0, n)}\n… (${s.length - n} more characters)` : s; };
   if (SHELL_TOOLS.has(tool)) return { kind: "command", title: "Claude wants to run a command", path: "", detail: clip(input.command, 20_000), note: String(input.description || "").slice(0, 300) };
+  if (/(^|__)app_python$/.test(tool)) return { kind: "command", title: "Claude wants to run Python in the program in the middle", path: "", detail: clip(input.code, 20_000), note: "It runs inside the program (Blender or Krita) and can do anything that program can, including saving and deleting files." };
   if (tool === "Write") return { kind: "file", title: "Claude wants to write a file", path: String(input.file_path || ""), detail: clip(input.content, 20_000), note: "The whole file will be replaced with this text." };
   if (tool === "Edit") return { kind: "file", title: "Claude wants to change a file", path: String(input.file_path || ""), detail: `REPLACE:\n${clip(input.old_string, 10_000)}\n\nWITH:\n${clip(input.new_string, 10_000)}`, note: input.replace_all ? "Every match in the file will be replaced." : "" };
   return { kind: "other", title: `Claude wants to use ${tool}`, path: String(input.file_path || input.notebook_path || input.path || ""), detail: clip(JSON.stringify(input, null, 2), 20_000), note: "" };
@@ -468,7 +475,7 @@ function askApproval(body) {
 // goes to the page (SSE "app-control"), the desktop window does it, and the page posts the answer to
 // /api/apps/control/answer. A plain browser tab answers "no" softly: that only counts when no desktop
 // window answers within a few seconds. Stop, the task ending or the setting going off ends every step.
-const CONTROL_CMDS = new Set(["state", "open", "look", "click", "type", "key", "scroll", "drag"]);
+const CONTROL_CMDS = new Set(["state", "open", "look", "click", "type", "key", "scroll", "drag", "act", "bridge", "bridge-call", "python"]);
 const CONTROL_MS = Number(process.env.BRAIN_CONTROL_MS || 60_000);
 const controls = new Map(); // id -> { id, resolve, timer, soft }
 function finishControl(c, result) {
@@ -499,6 +506,10 @@ function controlLine(tool, a) {
     case "app_key": return `press ${clip(a.keys)}${a.times > 1 ? ` x${a.times}` : ""}`;
     case "app_scroll": return `scroll ${a.amount > 0 ? "up" : "down"} ${Math.abs(Number(a.amount) || 0)} at ${at}`;
     case "app_drag": return `drag ${a.from_target !== undefined ? `#${a.from_target}` : `(${a.from_x}, ${a.from_y})`} to ${a.to_target !== undefined ? `#${a.to_target}` : `(${a.to_x}, ${a.to_y})`}`;
+    case "app_act": return `${a.action || "press"} #${a.target}${a.action === "set" ? ` = "${clip(a.value)}"` : ""} (no mouse)`;
+    case "app_commands": return `list commands${a.name ? ` (${clip(a.name)})` : a.filter ? ` matching "${clip(a.filter)}"` : ""}`;
+    case "app_command": return `run ${clip(a.command)}`;
+    case "app_python": return `Python: ${clip(a.code)}`;
     default: return tool;
   }
 }

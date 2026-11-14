@@ -9,6 +9,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { spawn, execFile, execFileSync } = require("node:child_process");
 const { serverState, stopOld, commandLine } = require("./server-check.cjs");
+const bridges = require("./bridges.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const PORT = Number(process.env.BRAIN_PORT) || 4777;
@@ -418,6 +419,7 @@ function onDockEvent(j) {
   if (j.ev === "closed" && docked) {
     const was = docked;
     forgetDocked();
+    if (was.pinId) appBridges.get(was.pinId)?.close(); // its MCP link; it connects again if the program is still running
     tellPage({ ev: "closed", name: was.name });
     // Some programs swap windows (Godot's project list opens the editor): follow the new one.
     if (was.pinId) followNewWindow(was);
@@ -537,9 +539,14 @@ async function openPin(id) {
   if (open.length) return dockWindow(biggest(open).hwnd, pin.name, pin.id);
   tellPage({ ev: "starting", name: pin.name });
   const argv = (pin.args.match(/"[^"]*"|\S+/g) || []).map((a) => a.replace(/^"|"$/g, ""));
+  // Programs with a bridge (Craft apps, Blender, Krita) start with it switched on (see bridges.cjs).
+  let prep;
+  try { prep = await bridges.prepare(pin.target, argv); } catch { prep = { target: pin.target, argv, env: {}, bridge: null }; }
   try {
-    spawn(pin.target, argv, { cwd: pin.cwd && fs.existsSync(pin.cwd) ? pin.cwd : path.dirname(pin.target), detached: true, stdio: "ignore" }).unref();
+    spawn(prep.target, prep.argv, { cwd: pin.cwd && fs.existsSync(pin.cwd) ? pin.cwd : path.dirname(pin.target), env: { ...process.env, ...prep.env }, detached: true, stdio: "ignore" }).unref();
   } catch (e) { return { ok: false, why: String(e.message || e) }; }
+  appBridges.get(pin.id)?.close();
+  if (prep.bridge) appBridges.set(pin.id, new bridges.Bridge(prep.bridge)); else appBridges.delete(pin.id);
   // Big programs (Blender, Godot) can take a while to show their window.
   const got = await waitForWindow(pinLaunched(pin), before, 90000);
   if (!got) return { ok: false, why: "no-window" };
@@ -818,6 +825,68 @@ async function controlStep(cmd, a) {
   return look.ok ? { ...look, did } : { ok: false, why: `${did} But the new picture failed: ${look.why}` };
 }
 
+// ----- bridges: the brain works inside the program, no mouse (bridges.cjs) -----
+const appBridges = new Map(); // pin id -> Bridge, for programs AI Brain opened with their bridge on
+const b64 = (s) => Buffer.from(String(s), "utf8").toString("base64");
+const clipText = (s, n = 100_000) => (s.length > n ? `${s.slice(0, n)}\n… (${s.length - n} more characters)` : s);
+async function bridgeStep(cmd, a) {
+  const pin = docked.pinId ? loadPins().find((p) => p.id === docked.pinId) : null;
+  const b = docked.pinId ? appBridges.get(docked.pinId) : null;
+  if (!b) {
+    const could = pin && bridges.kindOf(pin.target);
+    return { ok: false, why: could
+      ? `${docked.name} was opened outside AI Brain, so its bridge is off. Ask the user to save their work and close ${docked.name}, then open it with app_open (it starts with its bridge on). Meanwhile use app_act (no mouse) or the mouse tools.`
+      : `${docked.name} has no bridge (only the Craft apps, Blender and Krita have one). Use app_act (no mouse) or the mouse tools.` };
+  }
+  const up = await b.ready(60000);
+  if (!up.ok) return { ok: false, why: `${docked.name}'s bridge does not answer (${up.why}). If it was closed and opened again outside AI Brain, open it with app_open.` };
+  const head = { ok: true, name: docked.name, kind: b.kind, live: b.kind !== "craft" || !!b.info.live };
+  if (cmd === "bridge") {
+    if (b.kind !== "craft") return { ...head, python: true, about: await b.about() };
+    const c = await b.commands();
+    if (!c.ok) return { ok: false, why: c.why };
+    const one = String(a.name || "").trim();
+    if (one) {
+      const t = c.tools.find((x) => x.name === one);
+      return t ? { ...head, total: c.tools.length, tool: { name: t.name, description: t.description, input: t.input } } : { ok: false, why: `${docked.name} has no command "${one}". Use app_commands to list them.` };
+    }
+    const f = String(a.filter || "").toLowerCase();
+    const tools = c.tools.filter((t) => !f || `${t.name} ${t.description}`.toLowerCase().includes(f));
+    return { ...head, total: c.tools.length, filter: f, more: Math.max(0, tools.length - 80),
+      tools: tools.slice(0, 80).map((t) => ({ name: t.name, description: t.description.split("\n")[0].slice(0, 220), params: Object.keys(t.input?.properties || {}).slice(0, 16), required: t.input?.required || [] })) };
+  }
+  if (cmd === "bridge-call") {
+    const r = await b.call(String(a.command || ""), a.params && typeof a.params === "object" ? a.params : {});
+    if (!r.ok) return { ok: false, why: `${docked.name}: ${clipText(String(r.why || "it did not work"), 20_000)}` };
+    return { ...head, content: (r.content || []).slice(0, 20).map((x) => (x.type === "text" ? { type: "text", text: clipText(String(x.text || "")) } : x.type === "image" ? { type: "image", data: x.data, mimeType: x.mimeType } : { type: "text", text: clipText(JSON.stringify(x)) })) };
+  }
+  const r = await b.python(String(a.code || ""));
+  return r.ok ? { ...head, output: clipText(r.output || ""), result: r.result == null ? null : clipText(r.result) } : { ok: false, why: `Python in ${docked.name} failed:\n${clipText(String(r.why || ""), 20_000)}` };
+}
+// Background controls: press, fill in, tick, pick or open one thing from the last look, without the mouse.
+const ACT_WHY = {
+  changed: "That thing is not on screen any more (the program changed). Use app_look again.",
+  ambiguous: "The program changed and several things now match. Use app_look again.",
+  password: "That is a password box: the brain never types into those. Ask the user.",
+  disabled: "That thing is disabled right now.",
+  "read-only": "That box is read-only.",
+  "not-a-number": "That control takes a number.",
+};
+async function actStep(a) {
+  if (!ctl.look || ctl.look.hwnd !== docked.hwnd) return { ok: false, why: "Use app_look first, to see the program and get its numbered list." };
+  const it = ctl.look.items.find((x) => x.n === Number(a.target));
+  if (!it) return { ok: false, why: `There is no number ${a.target} in the last app_look list.` };
+  const action = ["press", "set", "toggle", "select", "expand", "collapse", "show", "focus"].includes(a.action) ? a.action : "press";
+  const args = ["act", docked.hwnd, docked.pid, it.n, it.kind, b64(it.name), action];
+  if (action === "set") args.push(b64(a.value ?? ""));
+  const r = await runControl(args);
+  if (!r.ok) return { ok: false, why: ACT_WHY[r.why] || (/^cannot-/.test(r.why) ? `${it.kind} "${it.name}" cannot be done that way (${r.why.slice(7)}). Try another action, or app_click.` : ctlWhy(r)) };
+  await sleep(Math.max(150, Math.min(5000, Number(a.wait_ms) || 400)));
+  const look = await controlLook();
+  const did = `${r.done.charAt(0).toUpperCase()}${r.done.slice(1)} ${it.kind} "${it.name}"${action === "set" ? ` (set to ${JSON.stringify(String(a.value ?? "").slice(0, 80))})` : ""}, without the mouse.`;
+  return look.ok ? { ...look, did } : { ok: false, why: `${did} But the new picture failed: ${look.why}` };
+}
+
 // One request from the brain. task = the brain task it belongs to: a new task starts fresh.
 async function brainControl(req) {
   const cmd = String(req?.cmd || ""), a = req?.args && typeof req.args === "object" ? req.args : {}, task = String(req?.task || "");
@@ -850,6 +919,8 @@ async function brainControl(req) {
     if (!ctl.stopped) tellPage({ ev: "brain-control", on: true, name: docked.name }); // after the user took over it stays off
     if (cmd === "look" || cmd === "open") return await controlLook();
     if (["click", "drag", "scroll", "type", "key"].includes(cmd)) return await controlStep(cmd, a);
+    if (["bridge", "bridge-call", "python"].includes(cmd)) return await bridgeStep(cmd, a);
+    if (cmd === "act") return await actStep(a);
     return { ok: false, why: "unknown" };
   } catch (err) {
     return { ok: false, why: String(err?.message || err) };
@@ -1144,6 +1215,20 @@ async function selfTest(dir) {
       const look2 = await step("look", {}, "task-2");
       const next = await step("click", { target: find(look2, "button", "Press me").n }, "task-2");
       console.log("CONTROL USER", JSON.stringify({ okClick: okClick.ok, um: um.why, um2: um2.why, badgeHidden: badgeAfter, lookStill: lookStill.ok, early: early.why, nextTask: next.ok }));
+      // Background controls: buttons, boxes and ticks without the mouse or the keyboard.
+      {
+        const T = "task-3";
+        const la = await step("look", {}, T);
+        const s0 = state(), m0 = screen.getCursorScreenPoint();
+        const a1 = await step("act", { target: find(la, "button", "Press me").n }, T);
+        const a2 = await step("act", { target: find(a1, "edit", "Notes").n, action: "set", value: "set without keys" }, T);
+        const a3 = await step("act", { target: find(a2, "checkbox", "Remember").n, action: "toggle" }, T);
+        const a4 = await step("act", { target: find(a3, "edit", "Secret").n, action: "set", value: "x" }, T);
+        const a5 = await step("act", { target: 9999 }, T);
+        const nb = await step("bridge", {}, T);
+        const s1 = state(), m1 = screen.getCursorScreenPoint();
+        console.log("CONTROL ACT", JSON.stringify({ a1: a1.did, a2: a2.did, a3: a3.did, a4: a4.why, a5: a5.why, nb: nb.why, png: !!a3.image?.data, clicks: [s0?.clicks, s1?.clicks], text: s1?.text, checked: [s0?.checked, s1?.checked], keys: [s0?.keys, s1?.keys], mouse: [m0, m1] }));
+      }
       // The whole way, as the brain's tools use it: server -> page -> this window -> the program.
       if (process.env.BRAIN_SHELL_SERVER_DATA) {
         const http = require("node:http");
@@ -1178,6 +1263,39 @@ async function selfTest(dir) {
     savePins(savedPins);
     await wait(800);
     console.log("CONTROL DONE", JSON.stringify({ closed: !!fxPid, docked: !!docked }));
+  }
+  if (process.env.BRAIN_SHELL_BRIDGE_EXES) {
+    // Real bridges through this window, the way the brain uses them: the program is pinned, opened by the
+    // brain (app_open), and used from the inside (a Craft app's own commands, Python in Blender).
+    await startDock();
+    const step = (cmd, args, task) => js(`window.station.apps('control', ${JSON.stringify({ cmd, task, args })})`);
+    for (const exe of process.env.BRAIN_SHELL_BRIDGE_EXES.split(";").filter(Boolean)) {
+      const name = path.basename(exe, ".exe").replace(/-launcher$/i, "");
+      if (((await dockCmd("list")).windows || []).some((w) => lower(path.basename(w.exe)).startsWith(lower(name)))) { console.log(`BRIDGE ${name.toUpperCase()}`, JSON.stringify({ skip: "already open" })); continue; }
+      const savedPins2 = loadPins();
+      savePins([{ id: "bridgepin", name: "Bridge test", target: exe, args: /blender/i.test(exe) ? "--factory-startup" : "", cwd: "" }]);
+      const T = `bridge-${name}`;
+      const op = await step("open", { name: "Bridge test" }, T);
+      const br = await step("bridge", {}, T);
+      let call = null;
+      if (br.ok && br.kind === "craft") {
+        const pick = (br.tools || []).find((x) => !x.required.length && /(document|info|inspect|state|status|list)/i.test(x.name)) || (br.tools || []).find((x) => !x.required.length);
+        const c = pick ? await step("bridge-call", { command: pick.name, params: {} }, T) : null;
+        call = c && { ok: c.ok, cmd: pick.name, kinds: (c.content || []).map((x) => x.type), why: c.why };
+      } else if (br.ok && br.kind === "blender") {
+        const py = await step("python", { code: "import bpy\nbpy.ops.mesh.primitive_monkey_add(location=(3, 0, 0))\nbpy.context.object.name" }, T);
+        call = { ok: py.ok, result: py.result, why: py.why };
+      }
+      const pic = await step("look", {}, T);
+      console.log(`BRIDGE ${name.toUpperCase()}`, JSON.stringify({ open: op.ok, openWhy: op.why, kind: br.kind, live: br.live, tools: br.total, version: br.about?.version, why: br.why, call, look: pic.ok }));
+      const dpid = docked?.pid;
+      await releaseDocked();
+      if (dpid) { try { process.kill(dpid); } catch { /* gone */ } }
+      appBridges.get("bridgepin")?.close();
+      appBridges.delete("bridgepin");
+      savePins(savedPins2);
+      await wait(1500);
+    }
   }
   if (process.env.BRAIN_SHELL_APPS) {
     // A program in the middle, opened the way a click on a pinned program opens it. System
