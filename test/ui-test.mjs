@@ -1078,10 +1078,10 @@ try {
   // ---------- what's new ----------
   console.log("what's new");
   {
-    ok(!(await page.$eval("#dlg-new", (d) => d.open)) && await page.evaluate(() => localStorage.getItem("brain.news") === "3.1"), "a first start does not show What's new");
+    ok(!(await page.$eval("#dlg-new", (d) => d.open)) && await page.evaluate(() => localStorage.getItem("brain.news") === "3.2"), "a first start does not show What's new");
     await page.evaluate(() => localStorage.setItem("brain.news", "2"));
     await page.reload({ waitUntil: "load" });
-    await until(() => document.querySelector("#dlg-new").open && document.querySelectorAll("#dlg-new .new-list li").length === 11 && /version 3\.1/.test(document.querySelector("#t-new").textContent), "after an update, What's new in version 3.1 opens by itself");
+    await until(() => document.querySelector("#dlg-new").open && document.querySelectorAll("#dlg-new .new-list li").length === 16 && /version 3\.2/.test(document.querySelector("#t-new").textContent), "after an update, What's new in version 3.2 opens by itself");
     await shot("27-whats-new");
     await page.click('#dlg-new [data-new="video"]');
     await until(() => !document.querySelector("#dlg-new").open && document.querySelector("#dlg-studio").open && document.querySelector("#t-studio").textContent === "Video Studio", "its Video Studio link opens the Video Studio");
@@ -1119,7 +1119,7 @@ try {
     await closeTop();
     await page.evaluate((t) => window.Brain.saveSetting({ theme: t }), themeBefore);
     await until((t) => document.documentElement.dataset.theme === t, "theme put back", themeBefore);
-    ok(await page.$eval("#about-version", (el) => /3.1.0/.test(el.textContent)).catch(() => false) || /3.1.0/.test(await page.evaluate(() => fetch("/api/ping").then((r) => r.text()))), "the version is 3.1.0");
+    ok(await page.$eval("#about-version", (el) => /3.2.0/.test(el.textContent)).catch(() => false) || /3.2.0/.test(await page.evaluate(() => fetch("/api/ping").then((r) => r.text()))), "the version is 3.2.0");
   }
 
   // ---------- a program in the middle ----------

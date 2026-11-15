@@ -21,7 +21,7 @@
   };
 
   // "What's new" is shown once to someone who used an older version here, never on a first start.
-  const NEWS = 3.1;
+  const NEWS = 3.2;
   const newsDue = (() => {
     try {
       const used = Object.keys(localStorage).some((k) => k.startsWith("brain."));

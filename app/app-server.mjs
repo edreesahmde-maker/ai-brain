@@ -21,7 +21,7 @@ import { musicStatus, musicCommand, musicArt, openApp, stopMusic } from "./music
 import buildStamp from "../build-stamp.cjs";
 import { discordStatus, openDiscord, openDiscordChat } from "./discord.mjs";
 
-const VERSION = "3.1.0";
+const VERSION = "3.2.0";
 // Fingerprint of this server's own files when it started (see build-stamp.cjs).
 const BUILD = buildStamp(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const APP = path.dirname(fileURLToPath(import.meta.url));

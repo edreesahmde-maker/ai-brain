@@ -1,6 +1,6 @@
 # AI Brain - where we left off (2026-11-15)
 
-Version 3.1.0. Start it with the "AI Brain" desktop shortcut, or `powershell -File launch.ps1`.
+Version 3.2.0 (GitHub release v3.2.0, 2026-11-15). Start it with the "AI Brain" desktop shortcut, or `powershell -File launch.ps1`.
 Server on http://127.0.0.1:4777, desktop window = Electron (`shell/main.cjs`).
 On GitHub (PUBLIC, MIT license, since 2026-11-15): https://github.com/edreesahmde-maker/ai-brain (branch master).
 The project lives at D:\Projects\ai-brain (moved from C:\Users\KUBE\Projects on 2026-11-14; the desktop
@@ -15,6 +15,9 @@ apps, portable); PhotoCraft, FilmCraft, AniCraft, ArtCraft Studio, Canva in %LOC
   JetBrains Mono, Orbitron, Cinzel. package.json: `npm start` = the desktop window (it used to start the MCP
   server), `npm run server`, `npm test` (api), `npm run test:ui`.
 - Starter issues opened on GitHub (good first issue / help wanted). Private vulnerability reporting is on.
+- Version 3.2.0 (package.json, package-lock.json, VERSION in app-server.mjs, server.mjs; NEWS = 3.2 in app.js):
+  What's new lists the 5 changes since 3.1 above the 3.1 list. Released as v3.2.0 on GitHub (source only, no
+  installer: there is no packaging step yet).
 
 ## Done on 2026-11-15: ChatGPT can be the brain ("Brain: Claude / ChatGPT")
 - Setting `brain` (claude | chatgpt, default claude): Settings > The brain > Brain. With ChatGPT the helpers
