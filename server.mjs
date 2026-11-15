@@ -534,15 +534,33 @@ if (BRAIN === "claude" && APPROVE_URL && APPROVE_KEY) server.registerTool(
 let FOLDERS = [WORK];
 try { const f = JSON.parse(process.env.AI_BRAIN_FOLDERS || "[]"); if (Array.isArray(f)) FOLDERS = [WORK, ...f.filter((x) => typeof x === "string")]; } catch { /* only the workspace */ }
 const within = (child, parent) => { const r = path.relative(path.resolve(parent).toLowerCase(), path.resolve(child).toLowerCase()); return r === "" || (!!r && !r.startsWith("..") && !path.isAbsolute(r)); };
+/**
+ * The real full name of a path: links followed and short DOS names (C:\Users\RUNNER~1) spelled out, so a
+ * path and a folder compare the same however they were written. For a path that does not exist yet, the
+ * nearest folder that does exist is resolved and the rest added back.
+ */
+function realOf(p) {
+  let cur = path.resolve(p);
+  const rest = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(cur), ...rest); } catch {
+      const up = path.dirname(cur);
+      if (up === cur) return path.resolve(p);
+      rest.unshift(path.basename(cur));
+      cur = up;
+    }
+  }
+}
+let REAL_FOLDERS = null;
 /** The full path, or throws when it is outside the allowed folders or off limits. */
 function allowedPath(p) {
   if (typeof p !== "string" || !p.trim()) throw new Error("Give a file path.");
   const full = path.resolve(WORK, p.trim());
-  if (forbidden({ p: full })) throw new Error("Not allowed: AI Brain never lets the brain touch sign-in data or its own keys.");
-  // Follow links, so a link inside the workspace cannot lead outside it.
-  let real = full;
-  try { real = fs.realpathSync.native(full); } catch { try { real = path.join(fs.realpathSync.native(path.dirname(full)), path.basename(full)); } catch { /* new folder */ } }
-  if (!FOLDERS.some((f) => within(full, f) && within(real, f))) throw new Error(`Not allowed: only files inside ${FOLDERS.join("; ")} can be used.`);
+  // Links are followed, so a link inside the workspace cannot lead outside it.
+  const real = realOf(full);
+  if (forbidden({ p: full, real })) throw new Error("Not allowed: AI Brain never lets the brain touch sign-in data or its own keys.");
+  REAL_FOLDERS ||= FOLDERS.map(realOf);
+  if (!REAL_FOLDERS.some((f) => within(real, f))) throw new Error(`Not allowed: only files inside ${FOLDERS.join("; ")} can be used.`);
   return full;
 }
 /** null when the step may run, otherwise the tool answer that says why not. */

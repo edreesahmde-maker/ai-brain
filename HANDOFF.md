@@ -24,6 +24,10 @@ apps, portable); PhotoCraft, FilmCraft, AniCraft, ArtCraft Studio, Canva in %LOC
 - Signing: no certificate yet (it must be issued to the owner). `.github/workflows/release.yml` builds on tags
   (attaches to the release) or by hand; signs with Azure Artifact Signing when its secrets/variables are set,
   otherwise warns "NOT signed". Options and set-up: docs/RELEASING.md.
+- Found by the first GitHub build: the runner's temp folder is a short DOS name (C:\Users\RUNNER~1\...), and
+  allowedPath compared the real (long) path of a file with the short folder name, so ChatGPT's and Gemini's
+  file tools refused every workspace file. Fixed with `realOf()` on both sides (server.mjs). Reproduce with
+  TEMP/TMP set to a short name (`for %I in ("<long folder>") do echo %~sI`).
 
 ## Done on 2026-11-15: open source
 - Repo made public. Secret scan first: every file and every version in the git history (key/token patterns,
