@@ -992,6 +992,9 @@ async function chatgptBrainTests() {
   x = await task("[both] ask both");
   const calls = x.slice.filter((e) => e.type === "call").map((e) => e.to).sort().join();
   ok(calls === "claude,gemini" && x.slice.filter((e) => e.type === "reply" && !e.isError).length === 2, "ask_both goes to Claude and Gemini");
+  const cur = (await get("/api/sessions")).body.find((m) => m.active);
+  const md = await (await fetch(BASE + "/api/session/export?id=" + cur?.id)).text();
+  ok(/## ChatGPT - /.test(md) && /### ChatGPT to Claude/.test(md) && !/## Claude - /.test(md.slice(md.indexOf("Hello brain"))), "the Markdown export names ChatGPT as the brain", md.slice(0, 300));
 
   rm("fake-gpt-change.txt");
   x = await task("[write] read only");

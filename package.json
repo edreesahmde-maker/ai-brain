@@ -2,11 +2,23 @@
   "name": "ai-brain",
   "version": "3.1.0",
   "private": true,
-  "description": "Lets Claude Code act as the brain and talk to ChatGPT (Codex CLI) and Gemini (Gemini CLI) using your subscription logins - no API keys.",
+  "description": "A desktop AI workstation: Claude or ChatGPT is the brain and calls the other AIs (Claude, ChatGPT, Gemini) through your own subscription logins - no API keys.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/edreesahmde-maker/ai-brain.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "main": "server.mjs",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "electron shell/main.cjs",
+    "server": "node app/app-server.mjs",
+    "mcp": "node server.mjs",
+    "test": "node test/api-test.mjs",
+    "test:ui": "node test/ui-test.mjs"
   },
   "dependencies": {
     "@google/genai": "^3.3.0",

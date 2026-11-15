@@ -358,9 +358,9 @@ function exportMarkdown(s) {
   const out = [`# ${s.title || "AI Brain session"}`, "", `_Exported from AI Brain on ${when(Date.now())}_`, ""];
   for (const e of s.events) {
     if (e.type === "task") out.push(`## You - ${when(e.t)}`, "", e.text, "");
-    else if (e.type === "call") out.push(`### ${e.from === "you" ? "You" : "Claude"} to ${name[e.to]}`, "", e.prompt, "");
+    else if (e.type === "call") out.push(`### ${e.from === "you" ? "You" : name[e.from] || "Claude"} to ${name[e.to]}`, "", e.prompt, "");
     else if (e.type === "reply") out.push(`### ${name[e.to]}${e.isError ? " (error)" : ""}`, "", e.text, "");
-    else if (e.type === "final") out.push(`## Claude${e.isError ? " (error)" : ""} - ${when(e.t)}`, "", e.text, "");
+    else if (e.type === "final") out.push(`## ${name[e.brain] || "Claude"}${e.isError ? " (error)" : ""} - ${when(e.t)}`, "", e.text, "");
   }
   return out.join("\n");
 }
