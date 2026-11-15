@@ -19,6 +19,9 @@ const CONTROLS_W = 138; // the three window buttons on Windows
 const WINDOW_HELPER = path.join(__dirname, "discord-window.ps1");
 const DISCORD_UPDATER = path.join(process.env.LOCALAPPDATA || "", "Discord", "Update.exe");
 const BRAIN_MIN_W = 760;
+// Where the server keeps chats, settings and pictures. From source: the project folder (as always).
+// Installed: %APPDATA%\AI Brain\data, because the install folder is replaced on every update.
+const dataDir = () => process.env.BRAIN_DATA_DIR || (app.isPackaged ? path.join(app.getPath("userData"), "data") : ROOT);
 
 app.setName("AI Brain");
 app.setPath("userData", process.env.BRAIN_SHELL_DATA || path.join(app.getPath("appData"), "AI Brain"));
@@ -63,19 +66,21 @@ Restart your computer, then open AI Brain again.`);
       return true;
     }
   }
-  const node = findNode();
+  // Installed: the server runs on Electron's own Node, so people need no Node.js of their own.
+  const node = app.isPackaged ? process.execPath : findNode();
   if (!node) {
     dialog.showErrorBox("AI Brain", "Node.js was not found, so the AI Brain server cannot start.\n\nInstall Node.js from nodejs.org, then open AI Brain again.");
     return false;
   }
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
+  if (app.isPackaged) { env.ELECTRON_RUN_AS_NODE = "1"; env.BRAIN_DATA_DIR = dataDir(); }
   spawn(node, [path.join(ROOT, "app", "app-server.mjs")], { cwd: ROOT, env, detached: true, stdio: "ignore", windowsHide: true }).unref();
   for (let i = 0; i < 80; i++) {
     await new Promise((r) => setTimeout(r, 250));
     if (await ping()) return true;
   }
-  dialog.showErrorBox("AI Brain", `The AI Brain server did not start.\n\nLook at ${path.join(ROOT, "app.log")} for the reason.`);
+  dialog.showErrorBox("AI Brain", `The AI Brain server did not start.\n\nLook at ${path.join(dataDir(), "app.log")} for the reason.`);
   return false;
 }
 

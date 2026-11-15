@@ -17,3 +17,6 @@ inspect-key.json
 
 # Test screenshots (made again by every test run)
 test/shots/
+
+# Built installers (npm run dist)
+dist/

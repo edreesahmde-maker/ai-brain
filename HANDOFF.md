@@ -7,6 +7,24 @@ The project lives at D:\Projects\ai-brain (moved from C:\Users\KUBE\Projects on 
 shortcut and ~/.claude.json's ai-brain MCP entry point here). Programs: D:\Apps (Blender, Krita, 14 Craft
 apps, portable); PhotoCraft, FilmCraft, AniCraft, ArtCraft Studio, Canva in %LOCALAPPDATA%\Programs.
 
+## Done on 2026-11-15: Windows installer (electron-builder) + signing set-up
+- `npm run dist` -> `dist\AI-Brain-Setup-<version>.exe` (NSIS, per user, no admin, pick the folder; about 128 MB).
+  Config in package.json "build": asar OFF on purpose (Blender/Krita read bridges/, csc.exe reads shell/*.cs);
+  only app/, shell/, bridges/, extension/ and the root .mjs/.cjs files go in (checked: no user data inside).
+  electron moved to devDependencies (electron-builder requires it); "main" is now shell/main.cjs.
+- Installed copy: main.cjs starts the server with process.execPath + ELECTRON_RUN_AS_NODE=1 (Electron 45 =
+  Node 24.22, no Node.js needed) and BRAIN_DATA_DIR = %APPDATA%\AI Brain\data (`dataDir()`). lib.mjs removes
+  ELECTRON_RUN_AS_NODE from its own env at start (programs it opens, e.g. Discord or VS Code, would break)
+  and `nodeEnv()` gives it back only to Node scripts it runs (runExe of process.execPath, fake brains, Codex,
+  `codex login`); the MCP config env carries it so Claude/Codex start server.mjs on Electron's Node too.
+  run_command strips it.
+- Verified: the API tests against the packaged app (`BRAIN_TEST_NODE`, `BRAIN_TEST_APP_DIR`, see
+  docs/RELEASING.md) 342 passed; the packaged window started its own server, kept data in its data folder, and
+  the real Claude (Haiku) asked the real Gemini through the tools ("helpers link: connected").
+- Signing: no certificate yet (it must be issued to the owner). `.github/workflows/release.yml` builds on tags
+  (attaches to the release) or by hand; signs with Azure Artifact Signing when its secrets/variables are set,
+  otherwise warns "NOT signed". Options and set-up: docs/RELEASING.md.
+
 ## Done on 2026-11-15: open source
 - Repo made public. Secret scan first: every file and every version in the git history (key/token patterns,
   long hex/base64, emails, passwords): only the fake test key `AIzaTestKey_...` and font authors' emails in an

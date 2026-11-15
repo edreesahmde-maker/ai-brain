@@ -51,6 +51,10 @@ AI Brain lets an AI change files, run commands and click in programs, so these r
 
 Found a security problem? Please don't open a public issue. Use GitHub's private vulnerability reporting (Security tab > Report a vulnerability).
 
+## Building the installer and releasing
+
+`npm run dist` builds the Windows installer into `dist\`. Tagging a version (`v3.3.0`) makes GitHub Actions build it and attach it to the release. Code signing and the full checklist are in [docs/RELEASING.md](docs/RELEASING.md).
+
 ## Good first issues
 
 Look for the [`good first issue`](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) label. Each one says where to look and how to test it. Comment on the issue before you start, so two people don't do the same work.

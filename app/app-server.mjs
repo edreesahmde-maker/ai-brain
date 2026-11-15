@@ -15,7 +15,7 @@ import {
   generateVideo, googleKeyState, saveGoogleKey, removeGoogleKey, listVideoModels, readVideoUsage, NO_VIDEO_KEY, VIDEO_MODELS, isVeo,
   loadSettings, saveSettings, readJson, writeJson,
   HERE as ROOT, DATA, WORK, MEDIA, LOGS, MEDIA_RE, CODEX_JS, AGY_EXE, CLAUDE_EXE,
-  isDiscordChat, forbidden, codexLean, codexLimits, recordChatGPT,
+  isDiscordChat, forbidden, codexLean, codexLimits, recordChatGPT, nodeEnv, ELECTRON_NODE,
 } from "../lib.mjs";
 import { musicStatus, musicCommand, musicArt, openApp, stopMusic } from "./music.mjs";
 import buildStamp from "../build-stamp.cjs";
@@ -56,6 +56,7 @@ let ctlKey = null, ctlTask = "";
 function writeMcpConfig(s = loadSettings(), key = null) {
   const env = { AI_BRAIN_BRAIN: s.brain, AI_BRAIN_FOLDERS: JSON.stringify(usableFolders(s)), AI_BRAIN_CHATGPT: s.chatgptEnabled ? "1" : "0", BRAIN_DATA_DIR: DATA, AI_BRAIN_FLOW: s.flowBrain ? "1" : "0", AI_BRAIN_APPS: s.appsBrain && ctlKey ? "1" : "0",
     AI_BRAIN_INSPECT: s.inspectBrain && ctlKey ? "1" : "0", AI_BRAIN_APP_URL: `http://${HOST}:${PORT}` };
+  if (ELECTRON_NODE) env.ELECTRON_RUN_AS_NODE = "1"; // the installed app: server.mjs runs on Electron's Node
   for (const k of ["BRAIN_FLOW_PORT", "BRAIN_FLOW_ORIGIN"]) if (process.env[k]) env[k] = process.env[k];
   if (key) Object.assign(env, { AI_BRAIN_APPROVE_URL: `http://${HOST}:${PORT}/api/approval/ask`, AI_BRAIN_APPROVE_KEY: key });
   if ((s.appsBrain || s.inspectBrain) && ctlKey) env.AI_BRAIN_CONTROL_KEY = ctlKey;
@@ -760,7 +761,7 @@ function startBrain(text, files = [], isRetry = false, mode = "auto") {
     env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(Math.round(s.memoryLimit / 2));
   }
   const child = FAKE_BRAIN
-    ? spawn(process.execPath, [FAKE_BRAIN, ...args], { cwd: WORK, windowsHide: true, env })
+    ? spawn(process.execPath, [FAKE_BRAIN, ...args], { cwd: WORK, windowsHide: true, env: nodeEnv(env) })
     : spawn(CLAUDE_EXE, args, { cwd: WORK, windowsHide: true, env });
   brain = child;
   live = ""; setPhase("starting");
@@ -926,8 +927,8 @@ function startChatGPTBrain(text, files, isRetry, mode, s) {
   const env = { ...process.env, NO_COLOR: "1" };
   const started = Date.now();
   let child;
-  if (FAKE_CODEX) child = spawn(process.execPath, [FAKE_CODEX, ...args], { cwd: WORK, windowsHide: true, env });
-  else if (fs.existsSync(CODEX_JS)) child = spawn(process.execPath, [CODEX_JS, ...args], { cwd: WORK, windowsHide: true, env });
+  if (FAKE_CODEX) child = spawn(process.execPath, [FAKE_CODEX, ...args], { cwd: WORK, windowsHide: true, env: nodeEnv(env) });
+  else if (fs.existsSync(CODEX_JS)) child = spawn(process.execPath, [CODEX_JS, ...args], { cwd: WORK, windowsHide: true, env: nodeEnv(env) });
   else {
     endTask(new Map());
     emit({ type: "final", brain: "chatgpt", isError: true, images: [], seconds: 0,
@@ -1566,7 +1567,7 @@ const server = http.createServer(async (req, res) => {
       if (p === "/api/login/chatgpt") {
         // Opens a terminal window running "codex login" (it opens the browser to sign in).
         if (!NO_OPEN) spawn("cmd.exe", ["/c", `start "ChatGPT sign-in" "${process.execPath}" "${CODEX_JS}" login`], {
-          windowsVerbatimArguments: true, detached: true, stdio: "ignore",
+          windowsVerbatimArguments: true, detached: true, stdio: "ignore", env: nodeEnv(),
         }).unref();
         statusAt = 0;
         return json(res, 200, { ok: true });

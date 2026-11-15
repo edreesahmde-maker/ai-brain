@@ -33,10 +33,14 @@ const post = async (p, body, headers = H) => { const r = await fetch(BASE + p, {
 const get = async (p) => { const r = await fetch(BASE + p); return { status: r.status, body: await r.json().catch(() => null), headers: r.headers }; };
 
 let server;
+// Test the installed app: BRAIN_TEST_NODE = "dist\\win-unpacked\\AI Brain.exe" and BRAIN_TEST_APP_DIR =
+// "dist\\win-unpacked\\resources\\app" run the packaged server on Electron's own Node.
+const APP_DIR = process.env.BRAIN_TEST_APP_DIR || ROOT;
+const NODE = process.env.BRAIN_TEST_NODE || process.execPath;
 function startServer(extraEnv = {}) {
-  server = spawn(process.execPath, [path.join(ROOT, "app", "app-server.mjs")], {
+  server = spawn(NODE, [path.join(APP_DIR, "app", "app-server.mjs")], {
     env: {
-      ...process.env, BRAIN_PORT: String(PORT), BRAIN_DATA_DIR: DATA, BRAIN_NO_OPEN: "1",
+      ...process.env, ...(process.env.BRAIN_TEST_NODE ? { ELECTRON_RUN_AS_NODE: "1" } : {}), BRAIN_PORT: String(PORT), BRAIN_DATA_DIR: DATA, BRAIN_NO_OPEN: "1",
       BRAIN_FAKE_DISCORD: "stopped",
       BRAIN_FAKE_CLAUDE: path.join(ROOT, "test", "fake-claude.mjs"), BRAIN_FAKE_CODEX: path.join(ROOT, "test", "fake-codex.mjs"), BRAIN_FAKE_HELPERS: "1",
       BRAIN_FAKE_IMAGE: FIXTURE, BRAIN_FAKE_VIDEO: path.join(ROOT, "test", "fixture.mp4"), BRAIN_FAKE_DELAY_MS: "150", BRAIN_APPROVAL_MS: "4000", BRAIN_FAKE_CODEX_HOME: CODEX_HOME, ...extraEnv,

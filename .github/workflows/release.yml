@@ -1,0 +1,61 @@
+# Builds the Windows installer. On a version tag (v3.2.0, ...) it is attached to that GitHub release;
+# started by hand (Actions > Build the Windows installer > Run workflow) it is only kept as a download
+# on the run's page. Signing happens only when the Azure Artifact Signing secrets are set (docs/RELEASING.md).
+name: Build the Windows installer
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Tests (fake AIs, no accounts needed)
+        run: npm test
+
+      - name: Build the installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          SIGN_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          SIGN_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          SIGN_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+          SIGN_PUBLISHER: ${{ vars.AZURE_SIGNING_PUBLISHER }}
+        run: |
+          $publish = if ($env:GITHUB_REF -like 'refs/tags/v*') { 'always' } else { 'never' }
+          $sign = @()
+          if ($env:AZURE_CLIENT_ID) {
+            $sign = @(
+              "-c.win.azureSignOptions.endpoint=$env:SIGN_ENDPOINT",
+              "-c.win.azureSignOptions.codeSigningAccountName=$env:SIGN_ACCOUNT",
+              "-c.win.azureSignOptions.certificateProfileName=$env:SIGN_PROFILE",
+              "-c.win.azureSignOptions.publisherName=$env:SIGN_PUBLISHER"
+            )
+            Write-Host "Signing with Azure Artifact Signing ($env:SIGN_PUBLISHER)."
+          } else {
+            Write-Host "::warning::No signing secrets are set, so this installer is NOT signed. Windows will warn people who run it. See docs/RELEASING.md."
+          }
+          npx electron-builder --win nsis --x64 --publish $publish @sign
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AI-Brain-Setup
+          path: dist/*.exe

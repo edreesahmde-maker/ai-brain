@@ -653,7 +653,7 @@ if (BRAIN === "chatgpt" && APPROVE_URL && APPROVE_KEY) {
     const no = await mayRun("PowerShell", { command: a.command, description: a.description || "" });
     if (no) return no;
     // The command never sees AI Brain's keys.
-    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^AI_BRAIN_|^BRAIN_/i.test(k)));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^AI_BRAIN_|^BRAIN_|^ELECTRON_RUN_AS_NODE$/i.test(k)));
     return new Promise((resolve) => {
       const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", a.command], { cwd: WORK, env, windowsHide: true });
       let out = "", cut = false;

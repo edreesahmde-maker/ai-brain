@@ -12,19 +12,19 @@
     "node": ">=22"
   },
   "type": "module",
-  "main": "server.mjs",
+  "main": "shell/main.cjs",
   "scripts": {
     "start": "electron shell/main.cjs",
     "server": "node app/app-server.mjs",
     "mcp": "node server.mjs",
     "test": "node test/api-test.mjs",
-    "test:ui": "node test/ui-test.mjs"
+    "test:ui": "node test/ui-test.mjs",
+    "dist": "electron-builder --win nsis --x64"
   },
   "dependencies": {
     "@google/genai": "^3.3.0",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "dompurify": "^3.4.17",
-    "electron": "^45.3.1",
     "marked": "^18.2.0",
     "zod": "^3.25.0"
   },
@@ -35,6 +35,66 @@
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/orbitron": "^5.3.0",
     "@fontsource/pirata-one": "^5.3.0",
+    "electron": "^45.3.1",
+    "electron-builder": "^26.18.0",
     "puppeteer-core": "^25.17.0"
+  },
+  "author": "Edres Mohamed",
+  "homepage": "https://github.com/edreesahmde-maker/ai-brain#readme",
+  "build": {
+    "appId": "io.github.edreesahmde-maker.aibrain",
+    "productName": "AI Brain",
+    "copyright": "Copyright (c) 2026 Edres Mohamed and the AI Brain contributors",
+    "directories": {
+      "output": "dist",
+      "buildResources": "shell"
+    },
+    "asar": false,
+    "files": [
+      "app/**",
+      "shell/**",
+      "bridges/**",
+      "extension/**",
+      "lib.mjs",
+      "server.mjs",
+      "flow.mjs",
+      "cli.mjs",
+      "build-stamp.cjs",
+      "package.json",
+      "LICENSE",
+      "README.md",
+      "!**/*.log"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "shell/icon.ico",
+      "executableName": "AI Brain"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AI Brain",
+      "artifactName": "AI-Brain-Setup-${version}.exe",
+      "deleteAppDataOnUninstall": false,
+      "license": "LICENSE"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "edreesahmde-maker",
+        "repo": "ai-brain",
+        "releaseType": "release"
+      }
+    ]
   }
 }

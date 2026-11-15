@@ -33,7 +33,16 @@ It asks the other AIs (**Claude**, **ChatGPT**, **Gemini**) for second opinions,
 | Google API key with billing | Veo video | Optional. Added in Settings > Video; Google charges per clip. |
 | Chrome, Edge or Brave | the web inspector extension, UI tests | Optional. |
 
-## Getting started
+## Download
+
+Get **`AI-Brain-Setup-<version>.exe`** from [Releases](https://github.com/edreesahmde-maker/ai-brain/releases).
+- It installs for your user only (no admin rights) and needs no Node.js.
+- You still need **Claude Code** installed and signed in (`claude auth login`). ChatGPT and Gemini are optional, as above.
+- The installed app keeps your data in `%APPDATA%\AI Brain\data`.
+
+> Until the installer is code-signed, Windows may show "Windows protected your PC" when you run it. Click *More info > Run anyway* only if you downloaded it from this repo's Releases page. See [docs/RELEASING.md](docs/RELEASING.md).
+
+## Getting started (from source)
 
 ```powershell
 git clone https://github.com/edreesahmde-maker/ai-brain.git

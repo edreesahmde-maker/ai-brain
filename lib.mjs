@@ -7,6 +7,13 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 export const HERE = path.dirname(fileURLToPath(import.meta.url));
+// The installed app runs its servers on Electron's own Node (ELECTRON_RUN_AS_NODE=1), so people need no
+// Node.js. Programs started from here must not inherit that switch (an Electron app such as Discord or
+// VS Code would not open), so it is removed and given back only to the Node scripts AI Brain runs itself.
+export const ELECTRON_NODE = !!process.versions.electron;
+delete process.env.ELECTRON_RUN_AS_NODE;
+/** The environment for running a Node script with process.execPath (Node, or Electron as Node). */
+export const nodeEnv = (env = process.env) => (ELECTRON_NODE ? { ...env, ELECTRON_RUN_AS_NODE: "1" } : { ...env });
 // All user data lives under DATA (the project folder by default). Tests point this elsewhere.
 export const DATA = process.env.BRAIN_DATA_DIR ? path.resolve(process.env.BRAIN_DATA_DIR) : HERE;
 const NPM_ROOT =
@@ -176,7 +183,7 @@ export function runExe(exe, args, { stdin, timeoutMs = TIMEOUT_MS, signal } = {}
     if (signal?.aborted) { resolve({ code: -1, stdout: "", stderr: "Stopped.", aborted: true }); return; }
     const child = spawn(exe, args, {
       cwd: WORK,
-      env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+      env: { ...(exe === process.execPath ? nodeEnv() : process.env), NO_COLOR: "1", FORCE_COLOR: "0" },
       windowsHide: true,
     });
     let stdout = "", stderr = "", timedOut = false, aborted = false;
