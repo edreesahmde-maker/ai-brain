@@ -672,4 +672,67 @@ if (BRAIN === "chatgpt" && APPROVE_URL && APPROVE_KEY) {
   });
 }
 
+// ---------- Gemini edits a file (either brain) ----------
+// Gemini's own file tools cannot be held to a folder (tested: it wrote outside the folder it was given,
+// and an "allow only these folders" rule blocked everything). So Gemini only WRITES THE TEXT, in a
+// read-only run, and AI Brain saves it: same folders, same off-limits check, same Allow / Deny.
+/** A short "what changes" view: the lines before and after, without the unchanged start and end. */
+function changeView(before, after) {
+  const a = before.split(/\r?\n/), b = after.split(/\r?\n/);
+  let top = 0;
+  while (top < a.length && top < b.length && a[top] === b[top]) top++;
+  let end = 0;
+  while (end < a.length - top && end < b.length - top && a[a.length - 1 - end] === b[b.length - 1 - end]) end++;
+  const gone = a.slice(top, a.length - end), added = b.slice(top, b.length - end);
+  const clip = (lines, mark) => (lines.length > 400 ? [...lines.slice(0, 400), `${mark} … (${lines.length - 400} more lines)`] : lines).map((l) => `${mark} ${l}`);
+  return { gone: gone.length, added: added.length, text: [`From line ${top + 1}:`, ...clip(gone, "-"), ...clip(added, "+")].join("\n") };
+}
+if (APPROVE_URL && APPROVE_KEY) server.registerTool("gemini_edit_file", {
+  title: "Gemini edits a file",
+  description: "Have GEMINI change (or create) one text file: give the file and what to change. Gemini writes the new version, " +
+    "then the user approves the change like any other (files inside your working folder or the folders the user gave you). " +
+    "Use it when the user wants Gemini to make the change, or when Gemini is the better fit. For big files, prefer your own edits.",
+  inputSchema: {
+    path: z.string().describe("The file's full path, or a path relative to the working folder (a new file is created)"),
+    instructions: z.string().min(1).describe("What Gemini should change, clearly and completely"),
+  },
+}, async (a) => {
+  try {
+    const full = allowedPath(a.path);
+    let before = "", exists = false;
+    try {
+      const buf = fs.readFileSync(full);
+      if (buf.subarray(0, 8000).includes(0)) return fail("That is not a text file, so Gemini cannot edit it.");
+      before = buf.toString("utf8"); exists = true;
+    } catch (e) { if (e.code !== "ENOENT") throw e; }
+    if (before.length > 150_000) return fail("That file is too big for Gemini to rewrite (over 150,000 characters). Make the change yourself with edit_file or Edit.");
+    const tag = Math.random().toString(36).slice(2, 10);
+    const prompt = [
+      "You are editing ONE file for the AI Brain app. Do not use any tools and do not change any file yourself: just write the new text.",
+      `File: ${full}${exists ? "" : " (it does not exist yet: write all of it)"}`,
+      `What to change: ${a.instructions}`,
+      "", "The file now, between the two marker lines:", `<<<FILE_${tag}`, before, `FILE_${tag}>>>`,
+      "", `Reply with the COMPLETE new text of the file between a line <<<NEW_${tag} and a line NEW_${tag}>>> (no code fences around it), then at most one short sentence on what you changed.`,
+    ].join("\n");
+    const r = await askGemini(prompt, { standalone: true });
+    const m = r.text.match(new RegExp(`<<<NEW_${tag}\\r?\\n([\\s\\S]*?)\\r?\\nNEW_${tag}>>>`));
+    if (!m) return fail(`Gemini did not send the new file, so nothing changed. Gemini said:\n${r.text.slice(0, 1500)}`);
+    let after = m[1];
+    if (/^```[^\n]*\n[\s\S]*\n```$/.test(after) && !before.startsWith("```")) after = after.replace(/^```[^\n]*\n/, "").replace(/\n```$/, "");
+    if (before.endsWith("\n") && !after.endsWith("\n")) after += "\n";
+    if (before.includes("\r\n")) after = after.replace(/\r?\n/g, "\r\n");
+    const said = r.text.slice(r.text.indexOf(`NEW_${tag}>>>`) + tag.length + 7).trim().slice(0, 300);
+    if (exists && after === before) return text(`Gemini made no change to ${full}.${said ? ` Gemini said: ${said}` : ""}`);
+    const view = changeView(before, after);
+    const no = await mayRun("GeminiEdit", { file_path: full, content: after, change: exists ? view.text : "", instructions: a.instructions, created: !exists });
+    if (no) return no;
+    let now = "";
+    try { now = fs.readFileSync(full, "utf8"); } catch { /* still new */ }
+    if (now !== before) return fail("The file changed while Gemini was working or while waiting for the user, so Gemini's version was not saved. Read it and try again.");
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, after);
+    return text(`${exists ? `Gemini changed ${full}: ${view.gone} line(s) out, ${view.added} line(s) in.` : `Gemini created ${full} (${after.split("\n").length} lines).`}${said ? `\nGemini said: ${said}` : ""}`);
+  } catch (e) { return fail(e); }
+});
+
 await server.connect(new StdioServerTransport());

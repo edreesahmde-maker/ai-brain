@@ -80,7 +80,7 @@ function folderProblem(f) {
   return "";
 }
 const usableFolders = (s) => [...new Set(s.folders.map((f) => path.resolve(f)))].filter((f) => !folderProblem(f));
-const HELPER_TOOLS = new Set(["ask_gemini", "ask_chatgpt", "ask_claude", "ask_both", "generate_image", "generate_video", "flow_make_video", "flow_save_videos"]);
+const HELPER_TOOLS = new Set(["ask_gemini", "ask_chatgpt", "ask_claude", "ask_both", "gemini_edit_file", "generate_image", "generate_video", "flow_make_video", "flow_save_videos"]);
 const FLOW_TOOLS = ["flow_make_video", "flow_look", "flow_click", "flow_type", "flow_wait", "flow_save_videos"];
 // app_python is left out on purpose: running Python inside Blender or Krita can do anything a program
 // can, so it goes through the approve tool like a command (asks in "ask", runs in "auto", refused in "read").
@@ -90,7 +90,9 @@ const ASK_RULES = JSON.stringify({ permissions: { ask: ["PowerShell", "Bash", "W
 const brainTools = (s) =>
   [...(s.chatgptEnabled ? ["ask_chatgpt", "ask_gemini", "ask_both", "generate_image"] : ["ask_gemini", "generate_image"]),
     ...(googleKeyState().connected ? ["generate_video"] : []), ...(s.flowBrain ? FLOW_TOOLS : []), ...(s.appsBrain ? APP_TOOLS : []),
-    ...(s.inspectBrain ? WEB_TOOLS : [])].map((t) => `mcp__ai-brain__${t}`);
+    ...(s.inspectBrain ? WEB_TOOLS : []),
+    // It asks the user itself (as "Gemini wants to change a file"), so Claude must not ask first as well.
+    ...(s.access === "ask" || s.access === "auto" ? ["gemini_edit_file"] : [])].map((t) => `mcp__ai-brain__${t}`);
 const videoName = (id) => VIDEO_MODELS.find((m) => m.id === id)?.label.replace(/ \(.*/, "") || String(id).replace(/^models\//, "");
 
 const brainName = (s = loadSettings()) => (s.brain === "chatgpt" ? "ChatGPT" : "Claude");
@@ -135,6 +137,7 @@ function systemPrompt(s) {
     const how = gpt ? "(write_file, edit_file) and run PowerShell commands (run_command)" : "(Write, Edit) and run PowerShell commands";
     if (s.access === "ask") lines.push(`You MAY create and edit files ${how}. Every change and every command first waits for the user to click Allow in the app, so work in a few clear steps and say briefly what each step is for. If the user denies a step, do not try the same thing another way; tell them what you wanted to do and why.`);
     else lines.push(`You MAY create and edit files ${how}. The user switched on "Always allow", so nothing waits for a click: every change and command runs right away. That is trust, so be careful: work in a few clear steps, say briefly what each step does, never delete or overwrite anything the task did not ask for, and when a step could lose the user's work, make a copy first. If a step is refused, do not try the same thing another way; tell the user what you wanted to do and why.`);
+    lines.push("Gemini can edit files too: gemini_edit_file gives Gemini one text file and what to change; Gemini writes the new version and the user approves it like your own changes. Use it when the user wants Gemini to make a change, or when Gemini is the better fit.");
     lines.push(`Your working folder is ${WORK}.${folders.length ? ` The user also gave you these folders: ${folders.join("; ")}.` : ""} ${gpt ? "read_file, list_folder, write_file and edit_file" : "The Write and Edit tools"} only work inside those folders; anywhere else you need ${gpt ? "run_command" : "a PowerShell command"} (which also needs the user's OK).`);
     lines.push("Never read or change Discord's data, the .claude, .codex or .gemini folders, or AI Brain's brain-mcp.json, google-key.json and inspect-key.json. Those requests are always refused.");
   } else {
@@ -418,7 +421,7 @@ const APPROVAL_MS = Number(process.env.BRAIN_APPROVAL_MS || 10 * 60_000); // bel
 let runKey = null;              // the key of the brain task that is running now (access "ask")
 let allowFilesThisRun = false;  // "Allow all file changes for this task" was clicked
 const approvals = new Map();    // id -> { id, tool, kind, title, path, detail, note, t, done }
-const FILE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
+const FILE_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "GeminiEdit"]);
 const SHELL_TOOLS = new Set(["PowerShell", "Bash"]);
 // Never allowed, whatever the user clicks: sign-in data and the approval key itself (forbidden() is in lib.mjs).
 function describe(tool, input = {}) {
@@ -427,6 +430,11 @@ function describe(tool, input = {}) {
   if (SHELL_TOOLS.has(tool)) return { kind: "command", title: `${who} wants to run a command`, path: "", detail: clip(input.command, 20_000), note: String(input.description || "").slice(0, 300) };
   if (/(^|__)app_python$/.test(tool)) return { kind: "command", title: `${who} wants to run Python in the program in the middle`, path: "", detail: clip(input.code, 20_000), note: "It runs inside the program (Blender or Krita) and can do anything that program can, including saving and deleting files." };
   if (tool === "Write") return { kind: "file", title: `${who} wants to write a file`, path: String(input.file_path || ""), detail: clip(input.content, 20_000), note: "The whole file will be replaced with this text." };
+  if (tool === "GeminiEdit") return {
+    kind: "file", title: input.created ? "Gemini wants to create a file" : "Gemini wants to change a file", path: String(input.file_path || ""),
+    detail: input.created ? clip(input.content, 20_000) : clip(input.change, 20_000),
+    note: `${who} asked Gemini: ${String(input.instructions || "").slice(0, 300)}${input.created ? "" : " (lines with - go, lines with + come in)"}`,
+  };
   if (tool === "Edit") return { kind: "file", title: `${who} wants to change a file`, path: String(input.file_path || ""), detail: `REPLACE:\n${clip(input.old_string, 10_000)}\n\nWITH:\n${clip(input.new_string, 10_000)}`, note: input.replace_all ? "Every match in the file will be replaced." : "" };
   return { kind: "other", title: `${who} wants to use ${tool}`, path: String(input.file_path || input.notebook_path || input.path || ""), detail: clip(JSON.stringify(input, null, 2), 20_000), note: "" };
 }
@@ -659,7 +667,7 @@ function toolTracker(from) {
       emit({ type: "log", level: "info", text: `${tool}${what ? `: ${String(what).replace(/\s+/g, " ").slice(0, 160)}` : ""}` });
       return;
     }
-    const p = input.prompt || input.description || "";
+    const p = tool === "gemini_edit_file" ? `Edit the file ${input.path || ""}: ${input.instructions || ""}` : input.prompt || input.description || "";
     setPhase("helpers");
     if (tool === "ask_both") {
       const pair = [from === "chatgpt" ? "claude" : "chatgpt", "gemini"];
@@ -669,7 +677,7 @@ function toolTracker(from) {
     } else {
       const to = tool === "ask_chatgpt" ? "chatgpt" : tool === "ask_claude" ? "claude" : "gemini";
       const video = tool === "generate_video" || tool.startsWith("flow_");
-      calls.set(id, { to, video });
+      calls.set(id, { to, video, edit: tool === "gemini_edit_file" });
       emit({ type: "call", id, from, to, video, prompt: tool === "generate_image" ? `Generate image: ${p}` : tool === "flow_save_videos" ? "Save the new video from Google Flow" : tool === "flow_make_video" ? `Google Flow video: ${p}` : video ? `Generate video: ${p}` : p });
     }
   };
@@ -688,7 +696,8 @@ function toolTracker(from) {
     } else {
       const images = mediaFrom(txt);
       emit({ type: "reply", id, to: call.to, text: txt, isError, images, video: !!call.video });
-      if (!call.video) noteResult(call.to, !isError); // a video problem says nothing about Gemini itself
+      // A video problem, or an edit the user said no to, says nothing about Gemini itself.
+      if (!call.video && !(call.edit && isError)) noteResult(call.to, !isError);
       if (images.length) send({ type: "media" });
     }
     if (!calls.size) setPhase("thinking");

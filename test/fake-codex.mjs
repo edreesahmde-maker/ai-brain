@@ -10,6 +10,7 @@
 //   [secret]  read_file in the .codex folder   [outside] read_file outside the allowed folders
 //   [error]   the turn fails                   [crash]  exit before anything
 //   [hang]    start, never end
+//   [gemini-edit] / [gemini-new] / [gemini-secret]  gemini_edit_file on gem.txt / a new file / the .codex folder ([noedit]: Gemini sends no file)
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -90,6 +91,10 @@ if (has("command")) { const r = await tool("run_command", { command: "Write-Outp
 if (has("read")) { const f = (prompt.match(/Attached files:\n(.+)/) || [])[1] || "missing.txt"; const r = await tool("read_file", { path: f.trim() }); done.push(`read: ${r.isError ? "refused" : "ok"} - ${r.text.slice(0, 200).replace(/\s+/g, " ")}`); }
 if (has("secret")) { const r = await tool("read_file", { path: path.join(process.env.USERPROFILE || "C:\\Users\\x", ".codex", "auth.json") }); done.push(`secret: ${r.isError ? "refused" : "ok"} - ${r.text}`); }
 if (has("outside")) { const r = await tool("read_file", { path: path.join(DATA, "settings.json") }); done.push(`outside: ${r.isError ? "refused" : "ok"} - ${r.text.slice(0, 120)}`); }
+const gem = async (label, p, instructions) => { const r = await tool("gemini_edit_file", { path: p, instructions }); done.push(`${label}: ${r.isError ? "denied" : "allowed"} - ${r.text.replace(/\s+/g, " ")}`); };
+if (has("gemini-edit")) await gem("gemini-edit", "gem.txt", `Add a line at the end.${has("noedit") ? " [noedit]" : ""}`);
+if (has("gemini-new")) await gem("gemini-new", "new-by-gemini.txt", "Write a short greeting.");
+if (has("gemini-secret")) await gem("gemini-secret", path.join(process.env.USERPROFILE || "C:\\Users\\x", ".codex", "config.toml"), "Change the model.");
 if (has("tools")) { await mcpReady(); const r = await rpc("tools/list", {}); done.push(`tools: ${(r.result?.tools || []).map((t) => t.name).sort().join(",")}`); }
 mcp?.kill();
 

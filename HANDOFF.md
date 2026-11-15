@@ -43,7 +43,22 @@ apps, portable); PhotoCraft, FilmCraft, AniCraft, ArtCraft Studio, Canva in %LOC
   Allow, asked the real Claude (ask_claude answered "4") and answered in 18 s; ~52k input tokens per turn
   (39k cached) - Codex's own instructions and tools are large.
 
-## Found on 2026-11-15, NOT fixed yet: the Gemini helper can write files
+## Done on 2026-11-15: Gemini can edit files (through AI Brain)
+- The user wanted Gemini to edit files. Gemini's OWN tools cannot be held to folders (tested for real: in
+  `--mode accept-edits` it wrote outside its folder and --add-dir folders without asking; an allow rule for
+  the folders plus deny `write_file(*)` blocked everything - deny wins). The user chose: through AI Brain.
+- New MCP tool `gemini_edit_file` (server.mjs, both brains, only while access is ask/auto): path + instructions.
+  AI Brain reads the file (allowedPath: WORK + user folders, forbidden()), asks Gemini in a STANDALONE run
+  (`askGemini(..., { standalone: true })`: own conversation, does not replace the ongoing one) for the whole new
+  text between `<<<NEW_<tag>` / `NEW_<tag>>>` markers, keeps CRLF and the last newline, then asks the user
+  ("Gemini wants to change/create a file", approval tool name `GeminiEdit`, kind file - "allow all file
+  changes" covers it) showing only the changed lines (`changeView`), and saves only if the file did not change
+  meanwhile. Text files up to 150k characters. For Claude it is in --allowedTools (it asks the user itself).
+- Activity/Gemini panel: shown as a call to Gemini ("Edit the file ..."); a Deny does not mark Gemini as failing.
+- Tests: api-test 341 passed (10 new). Real check 2026-11-15 (Claude Haiku as brain, real Gemini): CRLF list
+  file edited correctly after Allow, 25 s.
+
+## Found on 2026-11-15, NOT fixed yet: the Gemini helper can write files on its own
 - `askGeminiNow` runs `agy -p --mode plan`, believed read-only. Tested for real: asked to use write_file, it
   CREATED the file in its working folder (commands are refused in -p mode, file writes are not).
 - Tested fix: add `--settings '{"permissions":{"deny":["write_file(*)","command(*)"]}}'` -> "Permission denied
@@ -164,7 +179,7 @@ program when moving/resizing). Reviewed with Fable 5.2 as adviser; causes found 
 - `node test/inspect-test.mjs` -> 43 passed, 0 failed (real extension in a throw-away Brave profile, local test
   page, real server, the brain's tool server: pairing, share, every web_ tool, refusals, unshare, key, new code)
 - `node test/bridge-test.mjs` -> real Craft apps (all 17), Blender and Krita through their bridges (opens them)
-- `node test/api-test.mjs`    -> 331 passed, 0 failed (app control, bridges, web inspector, ChatGPT as the brain)
+- `node test/api-test.mjs`    -> 341 passed, 0 failed (app control, bridges, web inspector, ChatGPT as the brain, Gemini edits)
 - `node test/ui-test.mjs`     -> 495 passed, 0 failed (about 6 minutes)
 - `node test/shell-test.mjs`  -> 74 passed, 0 failed (incl. background controls and GridCraft + Blender bridges through the window)
   (earlier: 62 passed (real desktop window against a test server; Google Flow

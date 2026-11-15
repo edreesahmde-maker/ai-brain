@@ -984,7 +984,7 @@ async function chatgptBrainTests() {
   x = await task("[tools] which tools");
   const tools = (x.fin.text.match(/tools: (.*)/) || [])[1]?.split(",") || [];
   ok(["ask_claude", "ask_gemini", "ask_both", "read_file", "list_folder"].every((t) => tools.includes(t)), "read only: it can ask Claude and Gemini and read files", tools.join());
-  ok(!["ask_chatgpt", "approve", "write_file", "edit_file", "run_command"].some((t) => tools.includes(t)), "read only: no ChatGPT helper (it is the brain), no approve tool, no change tools");
+  ok(!["ask_chatgpt", "approve", "write_file", "edit_file", "run_command", "gemini_edit_file"].some((t) => tools.includes(t)), "read only: no ChatGPT helper (it is the brain), no approve tool, no change tools, no Gemini edits");
 
   x = await task("[claude] ask Claude");
   const call = x.slice.find((e) => e.type === "call");
@@ -1030,6 +1030,31 @@ async function chatgptBrainTests() {
   ok(ap?.title === "ChatGPT wants to run a command" && /hello 42/.test(x.fin.text), "a command asks first, then runs", x.fin?.text);
   ok(/key=\./.test(x.fin.text), "the command never sees AI Brain's approval key");
 
+  console.log("Gemini edits a file (through AI Brain)");
+  const gemFile = path.join(WORKDIR, "gem.txt");
+  fs.writeFileSync(gemFile, "line one\nline two\n");
+  from = await start("[gemini-edit] please");
+  ap = await answer(from, true);
+  x = await end(from);
+  ok(ap?.title === "Gemini wants to change a file" && /gem\.txt$/.test(ap.path) && /\+ edited by Gemini \(test\)/.test(ap.detail) && !/\+ line one/.test(ap.detail) && /^ChatGPT asked Gemini: Add a line/.test(ap.note), "Gemini's change is shown before it is saved: only the changed lines, and what was asked", JSON.stringify(ap));
+  ok(/gemini-edit: allowed - Gemini changed/.test(x.fin.text) && fs.readFileSync(gemFile, "utf8") === "line one\nline two\n\nedited by Gemini (test)\n", "Allow: AI Brain saves Gemini's version", JSON.stringify(fs.readFileSync(gemFile, "utf8")));
+  ok(x.slice.some((e) => e.type === "call" && e.from === "chatgpt" && e.to === "gemini" && /^Edit the file gem\.txt: Add a line/.test(e.prompt)) && x.slice.some((e) => e.type === "reply" && e.to === "gemini" && /Gemini changed/.test(e.text)), "the Gemini panel shows the request and the result");
+  const keep = fs.readFileSync(gemFile, "utf8");
+  from = await start("[gemini-edit] no thanks");
+  ap = await answer(from, false);
+  x = await end(from);
+  ok(/gemini-edit: denied - Not done/.test(x.fin.text) && fs.readFileSync(gemFile, "utf8") === keep, "Deny: the file stays as it was");
+  ok(!x.slice.some((e) => e.type === "helper_state" && e.who === "gemini" && e.ok === false), "a change the user said no to does not mark Gemini as failing");
+  x = await task("[gemini-edit] [noedit] sulk");
+  ok(/gemini-edit: denied - Gemini did not send the new file/.test(x.fin.text) && !x.slice.some((e) => e.type === "approval") && fs.readFileSync(gemFile, "utf8") === keep, "no new file from Gemini: nothing is asked and nothing changes");
+  from = await start("[gemini-new] make one");
+  ap = await answer(from, true);
+  x = await end(from);
+  ok(ap?.title === "Gemini wants to create a file" && there("new-by-gemini.txt") && /edited by Gemini/.test(fs.readFileSync(path.join(WORKDIR, "new-by-gemini.txt"), "utf8")), "Gemini can create a new file, after Allow");
+  x = await task("[gemini-secret] try");
+  ok(/gemini-secret: denied - Not allowed: AI Brain never lets the brain touch sign-in data/.test(x.fin.text) && !x.slice.some((e) => e.type === "approval"), "sign-in folders are refused without asking", x.fin?.text);
+  rm("gem.txt"); rm("new-by-gemini.txt");
+
   await post("/api/settings", { access: "auto" });
   rm("fake-gpt-change.txt");
   x = await task("[write] always allow");
@@ -1054,6 +1079,12 @@ async function chatgptBrainTests() {
   await post("/api/settings", { brain: "claude" });
   x = await task("Claude again");
   ok(x.fin && !x.fin.isError && !x.fin.brain && !/ChatGPT brain/.test(x.fin.text), "switching back: Claude is the brain again");
+  ok(!brainArgs().at(-1).args.includes("mcp__ai-brain__gemini_edit_file"), "Claude, read only: no Gemini edits");
+  await post("/api/settings", { access: "ask" });
+  x = await task("Claude may change things");
+  const ca = brainArgs().at(-1).args;
+  ok(ca.slice(ca.indexOf("--allowedTools")).includes("mcp__ai-brain__gemini_edit_file") && /gemini_edit_file gives Gemini one text file/.test(ca[ca.indexOf("--append-system-prompt") + 1]), "Claude, asks first: it can have Gemini edit files, and that tool asks the user itself (no second question from Claude)");
+  await post("/api/settings", { access: "read" });
 }
 
 // A saved theme that was removed in 3.1 (the three Black Clover ones) opens as Berserk.

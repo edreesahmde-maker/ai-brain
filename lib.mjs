@@ -217,6 +217,11 @@ async function fakeHelper(who, prompt, signal) {
   });
   if (signal?.aborted) throw stopped();
   if (/\[fail\]/i.test(prompt)) throw new Error(`${who} test failure.`);
+  const edit = prompt.match(/<<<FILE_(\w+)\n([\s\S]*?)FILE_\1>>>/);
+  if (edit) { // a gemini_edit_file request: give the file back with one line added
+    if (/\[noedit\]/i.test(prompt)) return { text: "I would rather not.", images: [] };
+    return { text: `Here it is.\n<<<NEW_${edit[1]}\n${edit[2]}edited by ${who} (test)\nNEW_${edit[1]}>>>`, images: [] };
+  }
   const images = [];
   let text = `**${who} (test reply)** to: ${prompt.slice(0, 200)}`;
   if (/image/i.test(prompt) && process.env.BRAIN_FAKE_IMAGE && !/\[noimage\]/i.test(prompt)) {
@@ -428,11 +433,12 @@ function readUsageFile(file) {
   return out;
 }
 
-async function askGeminiNow(prompt, { newConversation = false, model, signal } = {}) {
+// standalone: a one-off request in its own conversation (it neither continues nor replaces the ongoing one).
+async function askGeminiNow(prompt, { newConversation = false, standalone = false, model, signal } = {}) {
   if (signal?.aborted) throw stopped();
   if (FAKE_HELPERS) return fakeHelper("Gemini", prompt, signal);
   const state = loadState();
-  const resumeId = !newConversation && state.geminiConversation;
+  const resumeId = !newConversation && !standalone && state.geminiConversation;
   const chosen = model || loadSettings().geminiModel;
   // --mode plan = read-only: it can think, answer and generate images, but not change files.
   const args = ["-p", prompt, "--output-format", "json", "--mode", "plan", "--print-timeout", `${Math.floor(TIMEOUT_MS / 1000)}s`];
@@ -475,7 +481,7 @@ async function askGeminiNow(prompt, { newConversation = false, model, signal } =
         reply = reply.split(path.join(dir, f)).join(dest);
       } catch { /* skip */ }
     }
-    updateState({ geminiConversation: convId });
+    if (!standalone) updateState({ geminiConversation: convId });
   }
   if (images.length) reply += `\n\nSaved files:\n${images.join("\n")}`;
   log("Gemini", prompt, reply);
