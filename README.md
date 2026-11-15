@@ -40,7 +40,9 @@ Get **`AI-Brain-Setup-<version>.exe`** from [Releases](https://github.com/edrees
 - You still need **Claude Code** installed and signed in (`claude auth login`). ChatGPT and Gemini are optional, as above.
 - The installed app keeps your data in `%APPDATA%\AI Brain\data`.
 
-> Until the installer is code-signed, Windows may show "Windows protected your PC" when you run it. Click *More info > Run anyway* only if you downloaded it from this repo's Releases page. See [docs/RELEASING.md](docs/RELEASING.md).
+> Until the installer is code-signed, Windows may show "Windows protected your PC" when you run it. Click *More info > Run anyway* only if you downloaded it from this repo's Releases page.
+
+**Code signing policy:** see [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md) (free code signing provided by SignPath.io, certificate by SignPath Foundation, once approved). It also covers privacy: AI Brain sends nothing to its developers, and talks only to the AI services and Google features you choose to use.
 
 ## Getting started (from source)
 

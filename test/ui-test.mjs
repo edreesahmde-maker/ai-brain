@@ -1119,7 +1119,7 @@ try {
     await closeTop();
     await page.evaluate((t) => window.Brain.saveSetting({ theme: t }), themeBefore);
     await until((t) => document.documentElement.dataset.theme === t, "theme put back", themeBefore);
-    ok(await page.$eval("#about-version", (el) => /3.2.0/.test(el.textContent)).catch(() => false) || /3.2.0/.test(await page.evaluate(() => fetch("/api/ping").then((r) => r.text()))), "the version is 3.2.0");
+    ok(await page.$eval("#about-version", (el) => /3.2.1/.test(el.textContent)).catch(() => false) || /3.2.1/.test(await page.evaluate(() => fetch("/api/ping").then((r) => r.text()))), "the version is 3.2.1");
   }
 
   // ---------- a program in the middle ----------

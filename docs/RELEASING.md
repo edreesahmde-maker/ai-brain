@@ -39,35 +39,49 @@ npm test
 
 You can also start the workflow by hand (Actions > *Build the Windows installer* > *Run workflow*). It then only builds, and the installer is a download on the run's page.
 
-## Code signing
+## Code signing (SignPath Foundation)
 
-Without a signature, Windows SmartScreen shows "Windows protected your PC" and "Unknown publisher" when someone runs the installer. They can still click *More info > Run anyway*, but many people won't.
+AI Brain uses the [SignPath Foundation](https://signpath.org) program: free code signing for open-source projects. The certificate belongs to SignPath Foundation, so Windows shows **"SignPath Foundation"** as the publisher. The project's policy (roles, privacy, what is signed) is in [CODE_SIGNING.md](CODE_SIGNING.md).
 
 **What signing does and doesn't do:**
-- Signing puts a verified publisher name on the installer, and Windows can tell nobody changed it.
-- SmartScreen also looks at *reputation*, which a new app builds up as people download it.
-- So for the first releases, a signed app can still get a warning, but with your name instead of "Unknown publisher". Since 2024, even the expensive "EV" certificates no longer skip this.
+- Signing removes "Unknown publisher", and Windows can tell nobody changed the installer.
+- SmartScreen also looks at *reputation*, which a new app builds up as people download it, so the first signed releases may still show a warning for a while. No certificate skips that.
 
-A certificate is always issued to a verified person or company, so the project owner has to get it. Three ways:
+### One-time set-up (the project owner)
 
-| Option | Cost | Publisher name shown | Notes |
-|---|---|---|---|
-| **SignPath Foundation** (free code signing for open-source projects) | free | SignPath Foundation | You apply with the project. Once approved, signing runs from GitHub Actions through SignPath's own action (added to the workflow then). |
-| **Azure Artifact Signing** (formerly "Trusted Signing") | about US$10 a month | your verified name | Microsoft checks your identity. Not open to individuals in every country, so check Microsoft's current eligibility. Already wired into the workflow (below). |
-| **A certificate from a certificate authority** (Certum, Sectigo, DigiCert, ...) | about US$50 to $500 a year | your verified name | The key must live on a hardware token or the CA's cloud service. Some CAs have cheaper offers for open-source developers. Using one from GitHub Actions depends on the CA's cloud signing. |
+1. Turn on two-factor login on GitHub (*Settings > Password and authentication*). SignPath requires it for everyone on the project.
+2. Apply at <https://signpath.org/apply> with:
+   - the repository: `https://github.com/edreesahmde-maker/ai-brain`
+   - the license (MIT)
+   - the download page (GitHub Releases)
+   - the code signing policy (`docs/CODE_SIGNING.md`)
+   - a short description: *a Windows desktop app where Claude or ChatGPT plans a task and asks other AIs for help, through the user's own signed-in command-line tools; it can change files, run commands and use programs only after the user allows it.*
+3. Once approved, in SignPath:
+   - create the project;
+   - add a *trusted build system* for GitHub.com and link it;
+   - create a signing policy with you as the **Approver**;
+   - paste the artifact configuration from [`signpath/artifact-configuration.xml`](signpath/artifact-configuration.xml) (SignPath may adjust it);
+   - make an API token for a user who is a **Submitter**.
+4. In the GitHub repo (*Settings > Secrets and variables > Actions*), add:
+   - **Secret** `SIGNPATH_API_TOKEN`
+   - **Variables:**
+     - `SIGNPATH_ORGANIZATION_ID`
+     - `SIGNPATH_PROJECT_SLUG`
+     - `SIGNPATH_SIGNING_POLICY_SLUG`
 
-### Switching on Azure Artifact Signing
+### Every release, after that
 
-Once your Azure account, identity validation, signing account and certificate profile are set up, add these to the GitHub repo (*Settings > Secrets and variables > Actions*):
+What happens when you push a tag:
+1. The workflow builds the installer and sends it to SignPath.
+2. You get a signing request to approve in SignPath. The workflow waits up to an hour.
+3. Once you approve, it checks the signature (`Get-AuthenticodeSignature` must say *Valid*) and attaches the signed installer to the release.
 
-- **Secrets** (from an app registration that has the *Artifact Signing Certificate Profile Signer* role):
-  - `AZURE_TENANT_ID`
-  - `AZURE_CLIENT_ID`
-  - `AZURE_CLIENT_SECRET`
-- **Variables:**
-  - `AZURE_SIGNING_ENDPOINT`: for example `https://eus.codesigning.azure.net/`
-  - `AZURE_SIGNING_ACCOUNT`: the signing account name
-  - `AZURE_SIGNING_PROFILE`: the certificate profile name
-  - `AZURE_SIGNING_PUBLISHER`: the name on the certificate, exactly as it appears there
+If the signature isn't valid, nothing is published.
 
-The next tag builds a signed installer. To check a signature, right-click the `.exe` > *Properties* > *Digital Signatures*, or run `Get-AuthenticodeSignature .\AI-Brain-Setup-<version>.exe`.
+Each release's notes must link the code signing policy. To check a signature yourself: right-click the `.exe` > *Properties* > *Digital Signatures*, or run `Get-AuthenticodeSignature .\AI-Brain-Setup-<version>.exe`.
+
+### Other ways to sign
+
+If SignPath doesn't fit, two paid options put your own name on the installer. The workflow's signing step would need to change for either.
+- Microsoft's Azure Artifact Signing (about US$10 a month; not open to individuals in every country).
+- A certificate from a certificate authority such as Certum or Sectigo.

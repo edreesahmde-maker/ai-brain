@@ -1,11 +1,27 @@
 # AI Brain - where we left off (2026-11-15)
 
-Version 3.2.0 (GitHub release v3.2.0, 2026-11-15). Start it with the "AI Brain" desktop shortcut, or `powershell -File launch.ps1`.
+Version 3.2.1 (GitHub releases v3.2.0, v3.2.1 with the installer, 2026-11-15). Start it with the "AI Brain" desktop shortcut, or `powershell -File launch.ps1`.
 Server on http://127.0.0.1:4777, desktop window = Electron (`shell/main.cjs`).
 On GitHub (PUBLIC, MIT license, since 2026-11-15): https://github.com/edreesahmde-maker/ai-brain (branch master).
 The project lives at D:\Projects\ai-brain (moved from C:\Users\KUBE\Projects on 2026-11-14; the desktop
 shortcut and ~/.claude.json's ai-brain MCP entry point here). Programs: D:\Apps (Blender, Krita, 14 Craft
 apps, portable); PhotoCraft, FilmCraft, AniCraft, ArtCraft Studio, Canva in %LOCALAPPDATA%\Programs.
+
+## Done on 2026-11-15: code signing through SignPath Foundation (waiting for the owner to apply)
+- The user chose SignPath Foundation (free for open source; the publisher shown is "SignPath Foundation").
+  Their rules (signpath.org/terms): OSI license, no proprietary parts, already released in the form to be
+  signed, built on CI from source on GitHub-hosted runners, every release approved by hand, MFA for everyone,
+  a "Code signing policy" (roles + privacy + the attribution line) linked from the home and download pages.
+- Done: docs/CODE_SIGNING.md (policy, roles, privacy), README links it, docs/signpath/artifact-configuration.xml
+  (DRAFT, not checked by SignPath), docs/RELEASING.md (owner's steps). release.yml: build -> upload-artifact@v7
+  (unsigned) -> signpath/github-action-submit-signing-request@v3 when vars.SIGNPATH_ORGANIZATION_ID is set
+  (waits up to 1 h for the Approver) -> Get-AuthenticodeSignature must be Valid -> gh release upload. Without
+  SignPath it publishes the UNSIGNED installer with a warning. The SignPath step itself is untested until approval.
+- Version 3.2.1 (the short-path fix) released with the unsigned installer, because SignPath wants a release.
+- Owner still to do: GitHub two-factor login (could not be checked from here), apply at signpath.org/apply,
+  then the SignPath project set-up and 1 secret + 3 variables (docs/RELEASING.md).
+- Review points SignPath may ask about: the Krita bridge copies a plugin into %APPDATA%\krita and switches it on
+  in kritarc when Krita is opened with the bridge; the web inspector uses chrome.debugger on tabs the user shares.
 
 ## Done on 2026-11-15: Windows installer (electron-builder) + signing set-up
 - `npm run dist` -> `dist\AI-Brain-Setup-<version>.exe` (NSIS, per user, no admin, pick the folder; about 128 MB).
@@ -21,9 +37,7 @@ apps, portable); PhotoCraft, FilmCraft, AniCraft, ArtCraft Studio, Canva in %LOC
 - Verified: the API tests against the packaged app (`BRAIN_TEST_NODE`, `BRAIN_TEST_APP_DIR`, see
   docs/RELEASING.md) 342 passed; the packaged window started its own server, kept data in its data folder, and
   the real Claude (Haiku) asked the real Gemini through the tools ("helpers link: connected").
-- Signing: no certificate yet (it must be issued to the owner). `.github/workflows/release.yml` builds on tags
-  (attaches to the release) or by hand; signs with Azure Artifact Signing when its secrets/variables are set,
-  otherwise warns "NOT signed". Options and set-up: docs/RELEASING.md.
+- Signing: see the SignPath entry above (the first version of release.yml used Azure Artifact Signing).
 - Found by the first GitHub build: the runner's temp folder is a short DOS name (C:\Users\RUNNER~1\...), and
   allowedPath compared the real (long) path of a file with the short folder name, so ChatGPT's and Gemini's
   file tools refused every workspace file. Fixed with `realOf()` on both sides (server.mjs). Reproduce with

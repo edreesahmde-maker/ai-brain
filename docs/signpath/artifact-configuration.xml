@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DRAFT for the SignPath project "AI Brain" (paste it in SignPath: Project > Artifact configurations).
+     GitHub Actions uploads the installer as a ZIP (actions/upload-artifact), so the root is <zip-file>.
+     Only AI Brain's own installer is signed, and only when its product name is "AI Brain".
+     Not checked against SignPath yet: SignPath reviews it when they set the project up. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file-set>
+      <include path="AI-Brain-Setup-*.exe" product-name="AI Brain" />
+      <for-each>
+        <authenticode-sign />
+      </for-each>
+    </pe-file-set>
+  </zip-file>
+</artifact-configuration>

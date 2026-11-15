@@ -19,7 +19,7 @@ const CHATGPT = process.env.AI_BRAIN_CHATGPT !== "0" && BRAIN !== "chatgpt";
 // The second helper next to Gemini (ask_both): ChatGPT, or Claude when ChatGPT is the brain.
 const BOTH = BRAIN === "chatgpt" ? "Claude" : CHATGPT ? "ChatGPT" : null;
 
-const server = new McpServer({ name: "ai-brain", version: "3.2.0" });
+const server = new McpServer({ name: "ai-brain", version: "3.2.1" });
 
 const text = (t) => ({ content: [{ type: "text", text: t }] });
 const fail = (e) => ({ content: [{ type: "text", text: String(e?.message || e) }], isError: true });

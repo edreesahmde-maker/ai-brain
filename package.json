@@ -1,6 +1,6 @@
 {
   "name": "ai-brain",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "private": true,
   "description": "A desktop AI workstation: Claude or ChatGPT is the brain and calls the other AIs (Claude, ChatGPT, Gemini) through your own subscription logins - no API keys.",
   "license": "MIT",

@@ -1,6 +1,9 @@
-# Builds the Windows installer. On a version tag (v3.2.0, ...) it is attached to that GitHub release;
-# started by hand (Actions > Build the Windows installer > Run workflow) it is only kept as a download
-# on the run's page. Signing happens only when the Azure Artifact Signing secrets are set (docs/RELEASING.md).
+# Builds the Windows installer on GitHub-hosted runners, from this repository's source, after the tests pass.
+# - On a version tag (v3.2.1, ...) the installer is attached to that GitHub release.
+# - Started by hand (Actions > Build the Windows installer > Run workflow) it is only kept on the run's page.
+# Signing: once the SignPath variables and secret are set (docs/RELEASING.md), the installer goes to
+# SignPath, an Approver approves the request there, and only the signed installer (checked) is published.
+# Without them the installer is published UNSIGNED, with a warning.
 name: Build the Windows installer
 
 on:
@@ -10,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   build:
@@ -28,34 +32,60 @@ jobs:
         run: npm test
 
       - name: Build the installer
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Keep the unsigned installer
+        id: unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: AI-Brain-Setup-unsigned
+          path: dist/AI-Brain-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Sign with SignPath (waits for an Approver)
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+
+      - name: Pick the installer to publish
+        shell: pwsh
+        env:
+          SIGNING: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          if ($env:SIGNING) {
+            $f = Get-ChildItem signed -Recurse -Filter 'AI-Brain-Setup-*.exe' | Select-Object -First 1
+            if (-not $f) { Write-Error "SignPath sent back no installer."; exit 1 }
+            $sig = Get-AuthenticodeSignature $f.FullName
+            if ($sig.Status -ne 'Valid') { Write-Error "The installer's signature is $($sig.Status), so it is not published."; exit 1 }
+            Write-Host "Signed by: $($sig.SignerCertificate.Subject)"
+          } else {
+            $f = Get-ChildItem dist -Filter 'AI-Brain-Setup-*.exe' | Select-Object -First 1
+            Write-Host "::warning::SignPath is not set up yet, so this installer is NOT signed. Windows will warn people who run it. See docs/RELEASING.md."
+          }
+          Copy-Item $f.FullName out/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: AI-Brain-Setup
+          path: out/*.exe
+
+      - name: Attach it to the release
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          SIGN_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
-          SIGN_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
-          SIGN_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
-          SIGN_PUBLISHER: ${{ vars.AZURE_SIGNING_PUBLISHER }}
+          TAG: ${{ github.ref_name }}
         run: |
-          $publish = if ($env:GITHUB_REF -like 'refs/tags/v*') { 'always' } else { 'never' }
-          $sign = @()
-          if ($env:AZURE_CLIENT_ID) {
-            $sign = @(
-              "-c.win.azureSignOptions.endpoint=$env:SIGN_ENDPOINT",
-              "-c.win.azureSignOptions.codeSigningAccountName=$env:SIGN_ACCOUNT",
-              "-c.win.azureSignOptions.certificateProfileName=$env:SIGN_PROFILE",
-              "-c.win.azureSignOptions.publisherName=$env:SIGN_PUBLISHER"
-            )
-            Write-Host "Signing with Azure Artifact Signing ($env:SIGN_PUBLISHER)."
-          } else {
-            Write-Host "::warning::No signing secrets are set, so this installer is NOT signed. Windows will warn people who run it. See docs/RELEASING.md."
-          }
-          npx electron-builder --win nsis --x64 --publish $publish @sign
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE) { gh release create $env:TAG --title "AI Brain $($env:TAG.TrimStart('v'))" --notes "See the README and docs/CODE_SIGNING.md." }
+          gh release upload $env:TAG (Get-ChildItem out/*.exe).FullName --clobber
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AI-Brain-Setup
-          path: dist/*.exe
